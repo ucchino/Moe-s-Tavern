@@ -100,7 +100,7 @@ $required = [ordered]@{
     # Team join: a refused join (a full team) leaves the seat SOLO, and a solo
     # seat's claims are refused NO_TEAM_MEMBERSHIP; both are named, never hidden.
     'team join prose' = @('moe.join_team refused: ', 'this seat has NO team, so claim_next_task skips every epic a live worker already holds', 'moe.join_team got no answer; team membership is unconfirmed.', 'claim_next_task refused with NO_TEAM_MEMBERSHIP')
-    'claimed prompt contract' = @('the wrapper will pick up the next task in a fresh session', 'INTERACTIVE session: this TUI stays open after you stop')
+    'claimed prompt contract' = @('the wrapper will pick up the next task in a fresh session', 'INTERACTIVE session: this TUI stays open after you stop', 'This interactive session may plan up to', 'MOE_ARCHITECT_TASKS_PER_SESSION')
     # Serena TOOL-tier tools: the editing calls whose successful result is TOOL
     # evidence (old names kept for older Serena installs), and the
     # replace_in_files summary header both wrappers parse.

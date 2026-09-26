@@ -21,7 +21,7 @@ import { atomicWriteText } from '../util/atomicWrite.js';
  * is not a customization: it is a vendored pre-stamp copy and is upgraded.
  */
 export const ROLE_DOCS: Record<string, string> = {
-  'architect.md': `<!-- moe-generated: sha=78f381a0ed75 -->
+  'architect.md': `<!-- moe-generated: sha=ff1e6da9fd65 -->
 
 # Architect
 
@@ -55,7 +55,7 @@ Follow \`nextAction\` on every Moe tool response. If it includes \`recommendedSk
 
 ## Idle behavior
 
-One task per session: after \`moe.submit_plan\` and your handoff memory, end your turn — the wrapper lands the row and claims the next PLANNING task once the CLI exits, so in an interactive TUI your last line tells the operator to exit it. Only a manually launched session with no task claimed for it calls \`moe.wait_for_task\`, which blocks until a new PLANNING task is announced in \`#architects\` ("📋 New plan needed: …").
+Tasks per session: an interactive session plans up to the number its prompt names (default 10, \`MOE_ARCHITECT_TASKS_PER_SESSION\`) — after each \`moe.submit_plan\` and its handoff memory, \`moe.claim_next_task\` \`{statuses:["PLANNING"]}\` then \`moe.get_context\`, until \`hasNext:false\` or the budget is spent; then your last line tells the operator to exit. A headless session plans only its claimed task, then ends its turn. Only a manually launched session with no task claimed for it calls \`moe.wait_for_task\`, which blocks until a new PLANNING task is announced in \`#architects\` ("📋 New plan needed: …").
 
 You do NOT govern in-flight workers. Oversight (drift scans, stale-worker handling, QA-rejection routing, release decisions) belongs to the **governor** role — a separate, always-on agent. If a worker has a planning question for you, they'll @mention you and the wrapper routes it to your next session. See \`docs/roles/governor.md\` for the full division of labor.
 
@@ -647,7 +647,7 @@ only you can.
  * role doc (git history of docs/roles plus the working copy at generation).
  */
 const SHIPPED_ROLE_BODY_SHAS: Record<string, readonly string[]> = {
-  'architect.md': ['005701cf18c9', '02fbfb6da557', '042af6bd58fb', '0f3a3788e50c', '0f8484b44ff2', '10f85ae26bfe', '1196d0c3f677', '1eb2a6b8ae47', '36c12e0f6b86', '38d016858dca', '78f381a0ed75', '9baf82c2cea5', 'a7b918e76e42', 'b3cbfdd18adf', 'b4a63b0579ba', 'da51e10b1521', 'e7d9ec2dbdab', 'efd88ce46ea5', 'f1d9a58427c9', 'f4f5d55cee56', 'fbdb940cb978', 'fe151bcb0a86'],
+  'architect.md': ['005701cf18c9', '02fbfb6da557', '042af6bd58fb', '0f3a3788e50c', '0f8484b44ff2', '10f85ae26bfe', '1196d0c3f677', '1eb2a6b8ae47', '36c12e0f6b86', '38d016858dca', '78f381a0ed75', '9baf82c2cea5', 'a7b918e76e42', 'b3cbfdd18adf', 'b4a63b0579ba', 'da51e10b1521', 'e7d9ec2dbdab', 'efd88ce46ea5', 'f1d9a58427c9', 'f4f5d55cee56', 'fbdb940cb978', 'fe151bcb0a86', 'ff1e6da9fd65'],
   'architect.reference.md': ['08b07943437a', '28353487e190', '4cc7254d0592', 'b94904ea606a', 'bbb60a02bce5', 'c16de6533b52', 'c540e2042420', 'da49d54ff8fe', 'e2a8f3f9711d'],
   'governor.md': ['2556278c295b', '3aa528c96f55', '669f916cafc6', 'a0c5bc216e41', 'd3da43241c7d', 'f882385984d6'],
   'governor.reference.md': ['00267f739525', '2621926c807a', '81ea7e05636b', '86f01763da81', '8c117a8d61d4', '9a404246e6ed', 'c6bbadd9b263', 'f57ea78fcf8c'],

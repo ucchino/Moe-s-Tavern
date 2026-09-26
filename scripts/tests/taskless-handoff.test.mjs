@@ -20,6 +20,9 @@ const psContext = between(ps, '    $dynamicContext = ""', '    # -------- Pre-fl
 const psBody = between(ps, '    $claimPromptBody = $null', '    $script:CliLaunchedAt = Get-Date');
 const shPrompt = between(sh, '    DYNAMIC_CONTEXT=""', '    # -------- Pre-flight landing: recovery');
 const windows = process.platform === 'win32';
+// The planner budget is read from the environment; an operator's own value must
+// not leak into the default-budget assertions.
+const { MOE_ARCHITECT_TASKS_PER_SESSION: _operatorBudget, ...baseEnv } = process.env;
 const engines = windows
   ? [['bash', 'C:/Program Files/Git/bin/bash.exe'], ['powershell', 'powershell.exe'], ['pwsh', 'pwsh.exe']]
   : [['bash', '/bin/bash']];
@@ -62,7 +65,7 @@ $statuses=@('WORKING'); $serenaProject=[IO.Path]::GetTempPath()
     const args = engine === 'bash'
       ? ['--noprofile', '--norc', file.replaceAll('\\', '/')]
       : ['-NoProfile', '-NonInteractive', '-File', file];
-    result = spawnSync(executable, args, { encoding: 'utf8', timeout: 20000 });
+    result = spawnSync(executable, args, { encoding: 'utf8', timeout: 20000, env: { ...baseEnv, ...o.env } });
   } finally {
     unlinkSync(file);
     rmdirSync(dir);
@@ -130,24 +133,38 @@ for (const [engine, executable] of engines) {
       assert.match(rendered.combined, expected);
     });
   }
-  // A claimed session is one task per CLI: the wrapper lands the row it
-  // launched and claims the next one only once the CLI exits. No claimed prompt
-  // may chain into moe.wait_for_task (a session that hops rows strands every
-  // row but the last), and an interactive TUI, which never exits on its own,
-  // must tell the operator to exit it, or the seat parks after every task.
+  // A claimed worker/qa session is one task per CLI: the wrapper lands the row
+  // it launched and claims the next one only once the CLI exits. No claimed
+  // prompt may chain into moe.wait_for_task (a session that hops rows strands
+  // every row but the last), and an interactive TUI, which never exits on its
+  // own, must tell the operator to exit it, or the seat parks after every task.
+  // The one exception is an interactive planner: submit_plan frees its seat and
+  // closes its attempt, and a plan lands no bytes of its own, so it may claim
+  // more PLANNING rows in-session up to MOE_ARCHITECT_TASKS_PER_SESSION.
   const exitHint = /Exit this CLI session \(e\.g\. \/exit; keep the terminal tab open\) to start the next task/;
+  const multiPlan = /may plan up to 10 tasks, this one included: .*call moe\.claim_next_task with statuses \['PLANNING'\] and workerId 'worker-fixture'/;
   for (const role of ['architect', 'worker', 'qa']) {
     for (const interactive of [false, true]) {
-      test(`${engine}: claimed ${interactive ? 'interactive' : 'headless'} ${role} ends after one task`, () => {
+      const multi = role === 'architect' && interactive;
+      test(`${engine}: claimed ${interactive ? 'interactive' : 'headless'} ${role} ${multi ? 'plans up to 10 tasks' : 'ends after one task'}`, () => {
         const { body } = render(engine, executable, { role, interactive, claimed: true, noTask: false });
         // [^.]* spans the em dash, which PowerShell 5.1 re-encodes on output.
         assert.match(body, /Do NOT call moe\.wait_for_task[^.]*the wrapper will pick up the next task in a fresh session\./);
         assert.doesNotMatch(body, /(?:then|Finally call|and call) moe\.wait_for_task|Once approved|respawn you/);
+        if (multi) assert.match(body, multiPlan);
+        else assert.doesNotMatch(body, /moe\.claim_next_task/);
         if (interactive) assert.match(body, exitHint);
         else assert.doesNotMatch(body, exitHint);
       });
     }
   }
+  test(`${engine}: MOE_ARCHITECT_TASKS_PER_SESSION=1 keeps an interactive planner to one task; junk falls back to 10`, () => {
+    const one = render(engine, executable, { role: 'architect', interactive: true, claimed: true, noTask: false, env: { MOE_ARCHITECT_TASKS_PER_SESSION: '1' } });
+    assert.doesNotMatch(one.body, /moe\.claim_next_task/);
+    assert.match(one.body, /record a 'task-task-fixture-handoff' note/);
+    const junk = render(engine, executable, { role: 'architect', interactive: true, claimed: true, noTask: false, env: { MOE_ARCHITECT_TASKS_PER_SESSION: '-3' } });
+    assert.match(junk.body, multiPlan);
+  });
 }
 
 // ---- Wrapper-side wait + adoption boundary: assert the GUARDS, in both

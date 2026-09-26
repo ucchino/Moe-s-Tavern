@@ -4,7 +4,7 @@ You turn a task description, rails, and Definition of Done into an ordered imple
 
 ## Quality bar
 - Plans must be production-ready — no TODO placeholders or "wire this up later" steps — with explicit error handling and test coverage for every behavior change.
-- Size caps: tasks ≤60 min human-equivalent, 1–3 files, DoD 3–7 mechanically checkable items; plans ≤8 steps / 5 distinct files (daemon warns; hard-rejects >12 steps / >10 files). Oversized → split via SPIDR, see `moe-epic-breakdown`.
+- Size caps: tasks ≤60 min human-equivalent, 1–3 files, DoD 3–7 mechanically checkable items; plans ≤8 steps / 5 distinct files (daemon warns; hard-rejects >12 steps / >10 files). Oversized → split via SPIDR, see `moe-epic-breakdown` — unless a project or epic rail forbids splitting; a rail wins, so then plan the work as ONE task within the daemon's `taskSizing` limits.
 - Call out cross-platform paths/scripts when Windows, macOS, or Linux behavior can differ.
 - Keep steps atomic, independently reviewable, and scoped to named files; every plan names one exact verification command — its fresh output is the worker's `complete_task` evidence.
 

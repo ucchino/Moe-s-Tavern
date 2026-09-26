@@ -1143,7 +1143,7 @@ If you're an architect: bake the verified symbol names into the step \`descripti
 
 Trivial doc edits, comment changes, formatting-only steps. If you're not naming a symbol, you don't need to verify one.`,
   'moe-epic-breakdown/SKILL.md': `---
-# moe-generated: sha=60b1aae9db1e
+# moe-generated: sha=8826b404fe9c
 name: moe-epic-breakdown
 description: Use when an architect is turning an epic into a set of tasks (moe.create_task), before planning any single one. Covers where to cut the seams, how to size and order tasks, what each task's Definition of Done must carry, and the mandatory final integration-and-hardening task. Distinct from moe-planning, which plans the steps inside one task.
 when_to_use: Architect facing an epic with no tasks yet, or an epic whose remaining work needs re-slicing. Run this before moe.create_task; run moe-planning later, per task.
@@ -1188,7 +1188,7 @@ Target: **≤60 minutes of human-equivalent work per task** — aim for ~30 (≈
 | Files touched | 1–3 | >5 distinct files warns, >10 rejects at \`moe.submit_plan\` |
 | Plan steps | ≤8 | >8 warns, >12 rejects at \`moe.submit_plan\` |
 | DoD items | 3–7, each mechanically checkable | >7 draws a \`moe.create_task\` warning |
-| Net changed LOC | ≤200 | >400 is QA grounds for reject-as-oversized |
+| Net changed LOC | ≤200 | >400 is QA grounds for reject-as-oversized, unless a rail waives size-based rejection |
 | Tasks per epic | 10–30 | >40 = re-slice into sub-epics (\`moe.create_task\` warns past \`settings.taskSizing.maxTasksPerEpic\`, default 40) |
 
 The daemon enforces this downstream (thresholds tunable via \`project.json\` \`settings.taskSizing\`): \`moe.submit_plan\` hard-rejects oversized plans with \`CONSTRAINT_VIOLATION\`. An undersliced epic doesn't save work — it bounces back here for re-slicing after the architect has already burned a planning pass. **Recalibrate your count upward:** an epic that feels like 2–3 tasks is almost always 10–30 small ones. Foundational/contract tasks first, then vertical slices, ending with the integration-and-hardening task.
@@ -1205,7 +1205,7 @@ Secondary split/merge signals:
 
 ### SPIDR — the split procedure
 
-When any cap above is exceeded, split with **SPIDR**. Try each letter in order; take the first that yields independently-landable pieces:
+When any cap above is exceeded, split with **SPIDR** — unless a project or epic rail forbids splitting, which wins: then keep the work as one task within the daemon's \`taskSizing\` limits. Try each letter in order; take the first that yields independently-landable pieces:
 
 - **S**pike — carve the unknown into its own research task whose deliverable is a written decision, not code.
 - **P**ath — split by workflow path: happy path first, each error/edge path its own task.
@@ -1262,7 +1262,7 @@ If the epic touched shared types, schema, wire protocol, or migrations, say so i
 
 Create the tasks, then stop. Each one gets planned separately — when it reaches \`PLANNING\` and you claim it, that's when \`moe-planning\` runs, with the task's epic position already decided here.`,
   'moe-planning/SKILL.md': `---
-# moe-generated: sha=7ff6711d0f28
+# moe-generated: sha=d7db70b4eed1
 name: moe-planning
 description: Use when an architect is turning a Moe task into an implementation plan via moe.submit_plan. Provides the canonical 8-phase template (plan, explore, tests, minimum impl, verify, document, adversarial review, QA loop), rules for when to skip phases on trivial tasks, and where the verification gate belongs — once at the end of a task, and at full scope only on the epic's final task.
 when_to_use: After moe.get_context returns a PLANNING task, before drafting implementationPlan.steps for moe.submit_plan.
@@ -1277,7 +1277,7 @@ Your job: turn the task in front of you into an implementation plan that a worke
 
 Count before you draft. If an honest plan needs **more than 8 steps or more than 5 distinct \`affectedFiles\`**, the *task* is too big — no plan fixes that. Do not pad several actions into one step to duck the cap: the step still executes at its real size, and the daemon counts distinct files regardless. \`moe.submit_plan\` returns \`warnings\` past 8 steps / 5 distinct files and hard-rejects past 12 steps / 10 distinct files with \`CONSTRAINT_VIOLATION\` (thresholds: \`project.json\` \`settings.taskSizing\`). Right-sized is ≤60 min human-equivalent, 1–3 files, one deliverable.
 
-Oversized means go back to breakdown, not to a denser plan: create smaller sibling tasks via \`moe-epic-breakdown\` (SPIDR split) and narrow this task to the first slice — or \`moe.report_blocked\` with the proposed split if the task isn't yours to split.
+Oversized means go back to breakdown, not to a denser plan: create smaller sibling tasks via \`moe-epic-breakdown\` (SPIDR split) and narrow this task to the first slice — or \`moe.report_blocked\` with the proposed split if the task isn't yours to split. A project or epic rail that forbids splitting wins over this: plan the work as ONE task within the daemon's \`taskSizing\` limits instead.
 
 Then shrink what survives. Load \`ponytail\` before drafting: a step that reuses an existing helper, a stdlib call, or a native platform feature is one step where a hand-rolled equivalent is four — the ladder is the cheapest route under the size cap. It shortens the solution, never the reading, and it never trims a DoD item, a rail, or a verification step: those are requested work.
 
@@ -1373,7 +1373,7 @@ Skip aggressively for genuinely trivial work. A typo fix doesn't need 8 steps.
 
 If the task conflicts with an existing rail, requires missing prerequisites, or is ambiguous in a way only a human can resolve — call \`moe.report_blocked\` instead of submitting a bad plan.`,
   'moe-qa-loop/SKILL.md': `---
-# moe-generated: sha=289b623b6490
+# moe-generated: sha=334ed425548b
 name: moe-qa-loop
 description: Use when reviewing a task in REVIEW status as the QA agent. Provides the structured decision flow for moe.qa_approve vs moe.qa_reject, with rejectionDetails that drive a clean fix on the worker side.
 when_to_use: QA agent claims a task in REVIEW status; replaces ad-hoc "looks fine to me" reviews.
@@ -1390,7 +1390,7 @@ For each task in \`REVIEW\`:
 
 1. **Read \`task.implementationPlan\` and \`task.definitionOfDone\`.** Know what was promised.
 2. **Audit the verification evidence.** \`moe.get_context\` returns \`task.verification\` — the exact command the worker ran at completion, its exit code, and an output tail — plus \`filesModified\`, \`commits\` (the wrapper's recorded landings — sha, ref, kind, pushed), \`landing.lastCompletion\` and recent \`rejectionHistory\`. Re-run the command yourself. Missing evidence, a non-zero exit, output that contradicts the claim, or a command that isn't the one the plan named → reject, citing the evidence gap.
-3. **Read the diff — the recorded one.** \`git show <sha>\` for each \`task.commits[]\` entry of kind \`completion\` (plus the same session's \`checkpoint\` entries when the completion is a follow-up), or \`git diff <base>..HEAD -- <filesModified>\`; \`git branch --contains <sha>\` confirms it is on the shared branch. Do not review the dirty shared working tree — other sessions' edits live there too. An empty \`task.commits\` at REVIEW is a bounded wait, not a blocker. Step 2 already re-ran \`task.verification\` and the tests, and that re-run normally outlasts the wrapper's landing window on its own — so re-poll \`moe.get_context\` straight after it rather than idling, up to ~2 minutes total. Never sleep-loop, and re-poll and decide before you stage anything. If a completion commit arrives, review that. If none has by then, verify the row on its merits on the working tree and land it yourself, then \`moe.record_commit\`, then approve — saying in the \`qa_approve\` summary that you self-landed after the bounded wait expired. That self-landing fallback is the one sanctioned exception to the dirty-tree rule above, and it is scoped to the paths *measured* to be this row's own by the recipe in \`.moe/roles/qa.reference.md\` (a path that also carries a peer's hunks is excluded whole). Read it adversarially — see the \`adversarial-self-review\` skill for the checklist. Count the size: **>400 net changed LOC is itself grounds to reject** (see "Oversized diffs" below).
+3. **Read the diff — the recorded one.** \`git show <sha>\` for each \`task.commits[]\` entry of kind \`completion\` (plus the same session's \`checkpoint\` entries when the completion is a follow-up), or \`git diff <base>..HEAD -- <filesModified>\`; \`git branch --contains <sha>\` confirms it is on the shared branch. Do not review the dirty shared working tree — other sessions' edits live there too. An empty \`task.commits\` at REVIEW is a bounded wait, not a blocker. Step 2 already re-ran \`task.verification\` and the tests, and that re-run normally outlasts the wrapper's landing window on its own — so re-poll \`moe.get_context\` straight after it rather than idling, up to ~2 minutes total. Never sleep-loop, and re-poll and decide before you stage anything. If a completion commit arrives, review that. If none has by then, verify the row on its merits on the working tree and land it yourself, then \`moe.record_commit\`, then approve — saying in the \`qa_approve\` summary that you self-landed after the bounded wait expired. That self-landing fallback is the one sanctioned exception to the dirty-tree rule above, and it is scoped to the paths *measured* to be this row's own by the recipe in \`.moe/roles/qa.reference.md\` (a path that also carries a peer's hunks is excluded whole). Read it adversarially — see the \`adversarial-self-review\` skill for the checklist. Count the size: **>400 net changed LOC is itself grounds to reject** (see "Oversized diffs" below, including its rail exception).
 4. **Verify each Definition-of-Done item.** Map every item to evidence in the diff. Missing evidence is a reject.
 5. **Spot-check the tests.** Did the worker add tests for the new behavior? Are they mutation-resistant (\`assertEquals('expected', actual)\`, not \`assert(actual)\`)? Are edge cases covered or only the happy path? Any **deleted or weakened test** in the diff (loosened assertion, skipped case, removed file) that the plan didn't call for is a reject on sight.
 6. **Run the regression suite if you can.** If the worker's \`complete_step\` summaries don't include test counts, run the suite yourself — the one the plan named, at the width the plan named (see below).
@@ -1408,6 +1408,8 @@ Still reject at any position for: a DoD item with no code, tests that pass when 
 ## Oversized diffs are a defect
 
 More than **400 net changed LOC** is legitimate grounds for \`moe.qa_reject\` on its own, whatever the code quality: review defect-discovery collapses past ~400 changed lines, so a diff that size is unreviewable, and unreviewable means unverifiable. Don't line-edit it — reject with \`rejectionDetails\` telling the architect to split the task (\`moe-epic-breakdown\` / SPIDR) and land it as reviewable slices. Target diff size is ≤200 net LOC.
+
+**A rail wins over this section.** When a project or epic rail waives size-based rejection (for example "QA never rejects for size"), never reject or route to a split on size alone. Review the diff on substance at whatever size, name its size in the \`qa_approve\` summary, and still reject for real defects.
 
 ## Approve when
 
@@ -1427,7 +1429,7 @@ Call \`moe.qa_approve\` with a \`summary\` naming what you verified — the comm
 - A DoD item has no corresponding code change.
 - Tests are missing or only check the happy path (for *this* task's behavior — see the depth section above before demanding system-wide coverage from a mid-epic task).
 - The diff deletes or weakens existing tests without the plan calling for it.
-- The diff exceeds ~400 net changed LOC — reject as oversized, route to a split.
+- The diff exceeds ~400 net changed LOC — reject as oversized, route to a split (not when a rail waives size-based rejection; see "Oversized diffs").
 - The diff does something the plan didn't promise (scope creep / surprise refactor).
 - An adversarial-review red flag is present and ignored.
 - A claim made in \`complete_step\` (e.g., "all tests pass") doesn't hold when re-run.

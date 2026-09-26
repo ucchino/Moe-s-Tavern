@@ -21,7 +21,7 @@ import { atomicWriteText } from '../util/atomicWrite.js';
  * is not a customization: it is a vendored pre-stamp copy and is upgraded.
  */
 export const ROLE_DOCS: Record<string, string> = {
-  'architect.md': `<!-- moe-generated: sha=ff1e6da9fd65 -->
+  'architect.md': `<!-- moe-generated: sha=93b0a870d380 -->
 
 # Architect
 
@@ -29,7 +29,7 @@ You turn a task description, rails, and Definition of Done into an ordered imple
 
 ## Quality bar
 - Plans must be production-ready — no TODO placeholders or "wire this up later" steps — with explicit error handling and test coverage for every behavior change.
-- Size caps: tasks ≤60 min human-equivalent, 1–3 files, DoD 3–7 mechanically checkable items; plans ≤8 steps / 5 distinct files (daemon warns; hard-rejects >12 steps / >10 files). Oversized → split via SPIDR, see \`moe-epic-breakdown\`.
+- Size caps: tasks ≤60 min human-equivalent, 1–3 files, DoD 3–7 mechanically checkable items; plans ≤8 steps / 5 distinct files (daemon warns; hard-rejects >12 steps / >10 files). Oversized → split via SPIDR, see \`moe-epic-breakdown\` — unless a project or epic rail forbids splitting; a rail wins, so then plan the work as ONE task within the daemon's \`taskSizing\` limits.
 - Call out cross-platform paths/scripts when Windows, macOS, or Linux behavior can differ.
 - Keep steps atomic, independently reviewable, and scoped to named files; every plan names one exact verification command — its fresh output is the worker's \`complete_task\` evidence.
 
@@ -180,7 +180,7 @@ Rules that keep this safe:
 - **It is not part of your task's diff.** This work lands in the Moe repo, never in the product repo's task commit, and never counts against the task's owned paths or file caps.
 
 Then say what you did: post the defect, the commit sha, and what it unblocks to \`#architects\` and \`#governors\`, and carry on with the plan you were writing.`,
-  'governor.md': `<!-- moe-generated: sha=2556278c295b -->
+  'governor.md': `<!-- moe-generated: sha=b1c15c152e75 -->
 
 # Governor
 
@@ -255,7 +255,7 @@ Unassigned BLOCKED tasks are the **norm** now, not an anomaly: a non-resource \`
 
 When the project is in \`CONTROL\` approval mode, \`moe.submit_plan\` now also cross-posts a \`📋 Plan ready for critique\` banner to \`#governors\` listing the task title, step count, and DoD. Read the plan via \`moe.get_context\`; if you see a structural problem the architect missed, call \`moe.submit_plan_critique { taskId, verdict: 'block', concerns: [...] }\`. A \`block\` verdict flips the task back to \`PLANNING\` (so the architect re-plans before the human ever sees it); a \`pass\` verdict is informational and does NOT auto-approve — humans still own approval. Use \`pass\` sparingly; if you don't have a concern, stay silent and let the human approve.
 
-**Size rubric.** Verdict \`block\` when the plan has >12 steps or >10 distinct \`affectedFiles\` — the daemon rejects these at \`submit_plan\`, so one that slipped past (custom \`taskSizing\` thresholds, older daemon) is an automatic block. Scrutinize 9–12 steps or 6–10 distinct files hard: the daemon has already warned, and a plan in that band usually hides two tasks. For an oversized task the concern is always "split via SPIDR — load \`moe-epic-breakdown\`", never line edits to the plan; splitting is the architect's job, not yours.
+**Size rubric.** Verdict \`block\` when the plan has >12 steps or >10 distinct \`affectedFiles\` — the daemon rejects these at \`submit_plan\`, so one that slipped past (custom \`taskSizing\` thresholds, older daemon) is an automatic block. Scrutinize 9–12 steps or 6–10 distinct files hard: the daemon has already warned, and a plan in that band usually hides two tasks. For an oversized task the concern is always "split via SPIDR — load \`moe-epic-breakdown\`", never line edits to the plan; splitting is the architect's job, not yours. A project or epic rail that forbids size-driven splits wins over this rubric: then never block a plan for size (the daemon's own \`taskSizing\` limits still apply).
 
 ## Mention Response Protocol
 
@@ -395,7 +395,7 @@ The wrapper — never the daemon — lands every session's files (completion com
 ## Quality memory
 
 Cross-session memory lives in the Serena MCP server (\`.serena/memories/\`), not in Moe. When you spot a recurring failure mode or a subtle invariant the system missed, \`write_memory\` a \`pattern-<area>\` note (or \`edit_memory\` an existing one). Governors own cross-task \`epic-<epicId>-notes\` — workers see one task at a time; you see the fleet. There is no auto-ranking, so consistent topic names are what make this knowledge findable.`,
-  'qa.md': `<!-- moe-generated: sha=e13f67cfacdd -->
+  'qa.md': `<!-- moe-generated: sha=6cf327f722c6 -->
 
 # QA
 
@@ -403,7 +403,7 @@ You verify a completed task against its Definition of Done and rails, then appro
 
 ## Approval bar
 - Verify; do not trust summaries without checking the diff and relevant files.
-- Audit \`task.verification\` from \`get_context\` — re-run the command yourself; missing, failing, or mismatched evidence is a reject. Treat >400 net changed LOC as reject-as-oversized (tell the architect to split).
+- Audit \`task.verification\` from \`get_context\` — re-run the command yourself; missing, failing, or mismatched evidence is a reject. Treat >400 net changed LOC as reject-as-oversized (tell the architect to split) — unless a project or epic rail waives size-based rejection. A rail always wins over this default: then review the diff on substance, note its size in the \`qa_approve\` summary, and never reject or ask for a split on size alone.
 - Audit \`task.commits\` from full \`get_context\` — review the recorded completion commit (\`git show <sha>\`, \`git branch --contains <sha>\`), never the dirty shared tree. An empty \`task.commits\` at REVIEW is a bounded wait, not a blocker: re-run \`task.verification\` and the tests first, then poll \`get_context {taskId, view:"status"}\` — up to ~2 minutes total, because the wrapper lands seconds after REVIEW. Status omits requirements and evidence: fetch full \`get_context\` again before any review or action. If a completion commit arrives, review that. If none does, verify the row on its merits on the working tree and land it yourself with the measured-attribution path recipe in \`qa.reference.md\` — then \`moe.record_commit\`, then approve, saying in the \`qa_approve\` summary that you self-landed after the bounded wait expired. A \`NO-COMPLETION-COMMIT\` warning after that is a daemon race, not a defect.
 - Run the right tests yourself and record the commands/results — \`qa_approve\` requires that summary, persists it, and returns \`warnings[]\` + \`commitEvidence\` when no commit backs the task.
 - Check cross-platform paths/scripts when the task touches wrappers, shell, PowerShell, or filesystem behavior.
@@ -647,11 +647,11 @@ only you can.
  * role doc (git history of docs/roles plus the working copy at generation).
  */
 const SHIPPED_ROLE_BODY_SHAS: Record<string, readonly string[]> = {
-  'architect.md': ['005701cf18c9', '02fbfb6da557', '042af6bd58fb', '0f3a3788e50c', '0f8484b44ff2', '10f85ae26bfe', '1196d0c3f677', '1eb2a6b8ae47', '36c12e0f6b86', '38d016858dca', '78f381a0ed75', '9baf82c2cea5', 'a7b918e76e42', 'b3cbfdd18adf', 'b4a63b0579ba', 'da51e10b1521', 'e7d9ec2dbdab', 'efd88ce46ea5', 'f1d9a58427c9', 'f4f5d55cee56', 'fbdb940cb978', 'fe151bcb0a86', 'ff1e6da9fd65'],
+  'architect.md': ['005701cf18c9', '02fbfb6da557', '042af6bd58fb', '0f3a3788e50c', '0f8484b44ff2', '10f85ae26bfe', '1196d0c3f677', '1eb2a6b8ae47', '36c12e0f6b86', '38d016858dca', '78f381a0ed75', '93b0a870d380', '9baf82c2cea5', 'a7b918e76e42', 'b3cbfdd18adf', 'b4a63b0579ba', 'da51e10b1521', 'e7d9ec2dbdab', 'efd88ce46ea5', 'f1d9a58427c9', 'f4f5d55cee56', 'fbdb940cb978', 'fe151bcb0a86', 'ff1e6da9fd65'],
   'architect.reference.md': ['08b07943437a', '28353487e190', '4cc7254d0592', 'b94904ea606a', 'bbb60a02bce5', 'c16de6533b52', 'c540e2042420', 'da49d54ff8fe', 'e2a8f3f9711d'],
-  'governor.md': ['2556278c295b', '3aa528c96f55', '669f916cafc6', 'a0c5bc216e41', 'd3da43241c7d', 'f882385984d6'],
+  'governor.md': ['2556278c295b', '3aa528c96f55', '669f916cafc6', 'a0c5bc216e41', 'b1c15c152e75', 'd3da43241c7d', 'f882385984d6'],
   'governor.reference.md': ['00267f739525', '2621926c807a', '81ea7e05636b', '86f01763da81', '8c117a8d61d4', '9a404246e6ed', 'c6bbadd9b263', 'f57ea78fcf8c'],
-  'qa.md': ['01fddd0ac2e9', '110188570bd8', '213db26d2afe', '238cdf8a5a75', '30ac5f670af8', '33353d0a6b31', '36b05245a387', '52ffd8f5e35c', '7a4154466321', '8719e56dc532', '91114123fce3', '9a582b89c068', '9d69be0c41a9', 'ab2a9113b813', 'bdf6c4fed023', 'ce63bc2f01b1', 'd663617d2440', 'e07cffb350ef', 'e13f67cfacdd', 'fe6ee0d3b5a0'],
+  'qa.md': ['01fddd0ac2e9', '110188570bd8', '213db26d2afe', '238cdf8a5a75', '30ac5f670af8', '33353d0a6b31', '36b05245a387', '52ffd8f5e35c', '6cf327f722c6', '7a4154466321', '8719e56dc532', '91114123fce3', '9a582b89c068', '9d69be0c41a9', 'ab2a9113b813', 'bdf6c4fed023', 'ce63bc2f01b1', 'd663617d2440', 'e07cffb350ef', 'e13f67cfacdd', 'fe6ee0d3b5a0'],
   'qa.reference.md': ['20b816870e69', '2165e20c17b9', '4d6939825dc7', '5450908dd463', '5a68f996e738', '7a888e2b306e', 'b3eec7c94327', 'e8b6300b7f5b'],
   'worker.md': ['05799e86c64e', '0f3ec8f95bbf', '1927aae853c5', '2901ab4e47c9', '2b22d0d22444', '4351f8a02fb9', '4f23b6eae966', '53d0feedcec3', '5840723dccb6', '59506c02e30f', '67000c4957ee', '6872916d110c', '6c1965e0baf5', '8775c3536190', '91be315a1190', '9e4aab4ea7e2', 'a7e172e84fd7', 'b1c51bebaf0a', 'b3d6ccf701eb', 'bbff0ab435ae', 'cc80dfca78c5', 'cdab9a8dac41', 'd303e1f53e05', 'e038bb840bf7', 'e4fa2a4da833', 'e8f98a76488c', 'f9e6abd6e1a2'],
   'worker.reference.md': ['00d768586ec5', '4818eaa4d242', '4b041787b980', '6b8e906e69d9', 'b0ef035a319f', 'de20c773900d', 'e6856d2d3801', 'eed9b381756d', 'eef302e11e5d']

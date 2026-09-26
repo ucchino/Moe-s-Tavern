@@ -3531,8 +3531,15 @@ EOF
   # -- idempotent re-run: byte-identical config --
   cp "$SCOPE_Y_CFG" "$TMP_DIR/scope-y-cfg-1.toml"
   set +e
-  MOE_SERENA_PATH="$FAKE_SERENA" FAKE_TASK_STATUS=REVIEW \
-    run_scope_wrapper "$SCOPE_Y_DIR" "$TMP_DIR/scope-y2.out" "$GROK_CLI" worker worker-scope-y --grok-exec
+  # The same operator-env scrub as the first run: a MOE_DAEMON_HOST left set
+  # here (every WSL fleet host sets it) writes a line the first run never
+  # wrote, and the byte-identity check below fails on the harness, not the
+  # wrapper. The ps1 twin scrubs the whole scenario.
+  (
+    unset MOE_GROK_MODEL MOE_GROK_EFFORT MOE_GROK_MCP_STARTUP_TIMEOUT_SEC MOE_GROK_MCP_TOOL_TIMEOUT_SEC MOE_DAEMON_HOST GROK_HOME
+    MOE_SERENA_PATH="$FAKE_SERENA" FAKE_TASK_STATUS=REVIEW \
+      run_scope_wrapper "$SCOPE_Y_DIR" "$TMP_DIR/scope-y2.out" "$GROK_CLI" worker worker-scope-y --grok-exec
+  )
   scope_y2_code=$?
   set -e
   [ "$scope_y2_code" -eq 0 ] || scope_fail Y "second wrapper run exited with $scope_y2_code" "$TMP_DIR/scope-y2.out"
@@ -3613,7 +3620,8 @@ EOF
   # approval_policy=never, so the wrapper passes only
   # `--sandbox <MOE_CODEX_SANDBOX|danger-full-access>`. Pins: --codex-exec launches
   # headless `exec -C <project>` with the seat's MOE_WORKER_ID override and
-  # never --full-auto; a worker or architect without the flag gets the TUI; --sandbox follows the exec subcommand; MOE_CODEX_SANDBOX
+  # never --full-auto; an architect without the flag gets the TUI, a worker
+  # defaults to exec (b7f9570) unless --interactive; --sandbox follows the exec subcommand; MOE_CODEX_SANDBOX
   # reaches argv verbatim; `inherit` drops the flag; an unknown value warns and
   # falls back; a fast non-zero exit propagates and prints the argv hint; the
   # project .codex/config.toml carries the moe table + top-level codex keys and
@@ -3769,18 +3777,32 @@ EOF
     cat "$CODEX_ARGS_FILE" >&2 || true
     scope_fail Z "the codex TUI launch must still carry -C <project>" "$TMP_DIR/scope-z5.out"
   fi
-  # -- polarity: a worker without --codex-exec gets the TUI too (codex is
-  # interactive for every role since 2026-09-07; headless is opt-in) --
+  # -- polarity: a worker without --codex-exec defaults to headless exec
+  # (b7f9570, 2026-09-24: the codex TUI never exits on its own, so an
+  # interactive worker landed one row and then idled); --interactive forces
+  # the TUI back. This pin still asserted the 2026-09-07 TUI default, which
+  # kept CI red at scenario Z from b7f9570 on. --
   rm -f "$CODEX_ARGS_FILE"
   set +e
   MOE_SERENA_PATH="$FAKE_SERENA" FAKE_TASK_STATUS=WORKING \
     run_scope_wrapper "$SCOPE_Z_DIR" "$TMP_DIR/scope-z5b.out" "$CODEX_CLI" worker worker-scope-z
   scope_z5b_code=$?
   set -e
-  [ "$scope_z5b_code" -eq 0 ] || scope_fail Z "worker TUI wrapper run exited with $scope_z5b_code" "$TMP_DIR/scope-z5b.out"
+  [ "$scope_z5b_code" -eq 0 ] || scope_fail Z "worker default wrapper run exited with $scope_z5b_code" "$TMP_DIR/scope-z5b.out"
+  if ! grep -Fqx -- 'exec' "$CODEX_ARGS_FILE"; then
+    cat "$CODEX_ARGS_FILE" >&2 || true
+    scope_fail Z "a worker without --codex-exec must default to headless codex exec (b7f9570)" "$TMP_DIR/scope-z5b.out"
+  fi
+  rm -f "$CODEX_ARGS_FILE"
+  set +e
+  MOE_SERENA_PATH="$FAKE_SERENA" FAKE_TASK_STATUS=WORKING \
+    run_scope_wrapper "$SCOPE_Z_DIR" "$TMP_DIR/scope-z5c.out" "$CODEX_CLI" worker worker-scope-z --interactive
+  scope_z5c_code=$?
+  set -e
+  [ "$scope_z5c_code" -eq 0 ] || scope_fail Z "worker --interactive wrapper run exited with $scope_z5c_code" "$TMP_DIR/scope-z5c.out"
   if grep -Fqx -- 'exec' "$CODEX_ARGS_FILE" || grep -Fqx -- '--sandbox' "$CODEX_ARGS_FILE" || grep -Fqx -- 'approvals_reviewer=user' "$CODEX_ARGS_FILE"; then
     cat "$CODEX_ARGS_FILE" >&2 || true
-    scope_fail Z "a worker without --codex-exec must get the interactive codex TUI (no exec / --sandbox / reviewer pin)" "$TMP_DIR/scope-z5b.out"
+    scope_fail Z "a worker with --interactive must get the interactive codex TUI (no exec / --sandbox / reviewer pin)" "$TMP_DIR/scope-z5c.out"
   fi
   # -- argv probe: a CLI that rejects the launch argv (the --full-auto class of
   # break) must stop the seat with MOE_CLI_ARGV_REJECTED + a #general

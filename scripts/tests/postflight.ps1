@@ -1512,7 +1512,12 @@ finally{if(!process.env.MOE_KEEP_FROZEN_FIXTURE)for(const d of [root,wrapperTmp]
         $reloadProject = Join-Path $tempRoot 'reload\project'
         New-Item -ItemType Directory -Force -Path @((Split-Path $reloadWrapper), (Join-Path $reloadProject '.moe\messages')) | Out-Null
         Copy-Item -LiteralPath $wrapper -Destination $reloadWrapper
-        Get-ChildItem -LiteralPath (Split-Path $wrapper) -Filter 'prompt-cache*.mjs' | ForEach-Object {
+        # Every sibling .mjs helper, not just prompt-cache*.mjs: prompt-cache.mjs
+        # imports ./usage-receipt.mjs (58fff3c) and the wrapper runs
+        # usage-session.mjs, so the partial copy made the copied seat exit
+        # before its first claim ("no first claim ... RPC sequence ''").
+        # The sh twin copies the whole scripts/ dir.
+        Get-ChildItem -LiteralPath (Split-Path $wrapper) -Filter '*.mjs' | ForEach-Object {
             Copy-Item -LiteralPath $_.FullName -Destination (Split-Path $reloadWrapper)
         }
         Set-Content -Path (Join-Path $reloadProject '.moe\project.json') -Value '{"id":"proj-reload","name":"postflight-reload","settings":{"autoCommit":false}}' -Encoding UTF8
@@ -3184,8 +3189,9 @@ else {
                 # approval_policy = never, so the wrapper passes only
                 # `--sandbox <MOE_CODEX_SANDBOX|danger-full-access>`. Pins:
                 # -CodexExec launches headless `exec -C <project>` with the
-                # per-seat -c overrides and never --full-auto; a worker or
-                # architect without the switch gets the TUI; --sandbox
+                # per-seat -c overrides and never --full-auto; an architect
+                # without the switch gets the TUI, a worker defaults to exec
+                # (b7f9570) unless -Interactive; --sandbox
                 # follows `exec`; MOE_CODEX_SANDBOX reaches argv verbatim;
                 # `inherit` drops the flag; an unknown value warns and falls
                 # back; a fast non-zero exit propagates and prints the argv
@@ -3287,12 +3293,19 @@ else {
                     if ($scopeZArgs5 -contains 'exec' -or $scopeZArgs5 -contains '--sandbox' -or $scopeZArgs5 -contains 'approvals_reviewer=user') { Write-Host ($scopeZArgs5 -join ' '); throw 'SCENARIO Z FAILED: an architect must default to the interactive codex TUI (no exec / --sandbox / reviewer pin)' }
                     if ($scopeZArgs5 -cnotcontains '-C') { Write-Host ($scopeZArgs5 -join ' '); throw 'SCENARIO Z FAILED: the codex TUI launch must still carry -C <project>' }
 
-                    # Run 5b: a worker without -CodexExec gets the TUI too (codex is
-                    # interactive for every role since 2026-09-07; headless is opt-in).
+                    # Run 5b: a worker without -CodexExec defaults to headless exec
+                    # (b7f9570, 2026-09-24: the codex TUI never exits on its own, so
+                    # an interactive worker landed one row and then idled). Run 5c:
+                    # -Interactive forces the TUI back. 5b still asserted the
+                    # 2026-09-07 TUI default, which kept CI red from b7f9570 on.
                     $scopeZOut5b = Join-Path $tempRoot 'scope-z-5b.out'
                     Assert-ScopeRun 'Z' (Invoke-CodexWrapper $scopeZOut5b 'worker') $scopeZOut5b
                     $scopeZArgs5b = Get-CodexArgv
-                    if ($scopeZArgs5b -contains 'exec' -or $scopeZArgs5b -contains '--sandbox' -or $scopeZArgs5b -contains 'approvals_reviewer=user') { Write-Host ($scopeZArgs5b -join ' '); throw 'SCENARIO Z FAILED: a worker without -CodexExec must get the interactive codex TUI (no exec / --sandbox / reviewer pin)' }
+                    if ($scopeZArgs5b -notcontains 'exec') { Write-Host ($scopeZArgs5b -join ' '); throw 'SCENARIO Z FAILED: a worker without -CodexExec must default to headless codex exec (b7f9570)' }
+                    $scopeZOut5c = Join-Path $tempRoot 'scope-z-5c.out'
+                    Assert-ScopeRun 'Z' (Invoke-CodexWrapper $scopeZOut5c 'worker' @('-Interactive')) $scopeZOut5c
+                    $scopeZArgs5c = Get-CodexArgv
+                    if ($scopeZArgs5c -contains 'exec' -or $scopeZArgs5c -contains '--sandbox' -or $scopeZArgs5c -contains 'approvals_reviewer=user') { Write-Host ($scopeZArgs5c -join ' '); throw 'SCENARIO Z FAILED: a worker with -Interactive must get the interactive codex TUI (no exec / --sandbox / reviewer pin)' }
 
                     # Run 6: argv probe. A CLI that rejects the launch argv (the
                     # --full-auto class of break) must stop the seat with

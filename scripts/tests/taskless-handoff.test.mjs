@@ -185,7 +185,7 @@ for (const [name, src] of wrappers) {
       'a looping taskless run must say the wrapper (not the CLI) will retry');
   });
   test(`${name}: a taskless iteration never launches an unbound editing CLI`, () => {
-    for (const reason of ['reason=idle', 'reason=claim-failed']) {
+    for (const reason of ['reason=idle', 'reason=claim-failed', 'reason=teamless']) {
       assert.ok(src.includes(`MOE_TASKLESS_NO_LAUNCH ${reason}`),
         `missing the suppressed-launch outcome "${reason}" -- every taskless exit of the wait must be named, not silent`);
     }

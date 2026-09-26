@@ -354,7 +354,7 @@ if (tool === 'claim_next_task' && claimLimit > 0) {
   fs.writeFileSync(claimCount, String(claimN));
   if (claimN > claimLimit) { claimOnceIdle = true; fs.writeFileSync(path.join(moe, 'second-claim'), String(claimN)); }
 }
-if (tool === 'claim_next_task' && !claimOnceIdle && !['idle','blocked','noteam'].includes(process.env.FAKE_CLAIM_MODE)) attemptFixture();
+if (tool === 'claim_next_task' && !claimOnceIdle && !['idle','blocked','noteam','noteam-until-joined'].includes(process.env.FAKE_CLAIM_MODE)) attemptFixture();
 if (tool === 'get_context' && args.taskId) {
   const countFile = path.join(moe,'context-count');
   const count = Number(fs.existsSync(countFile) ? fs.readFileSync(countFile,'utf8') : 0) + 1;
@@ -368,13 +368,22 @@ if (tool === 'get_context' && args.taskId) {
 
 switch (tool) {
   case 'create_team': ok({ team: { id: 'team-smoke', name: args.name || 'Smoke' } }); break;
-  case 'join_team':
+  case 'join_team': {
     // FAKE_JOIN_FULL=1: refused the way teamStore refuses a join to a full team.
-    if (process.env.FAKE_JOIN_FULL === '1') {
+    // FAKE_JOIN_FULL_UNTIL=N: only the first N joins are refused, as when a seat
+    // frees up (or maxSize is raised) after the wrapper launched. .moe/join-count
+    // counts every join; .moe/team-joined marks an accepted one.
+    ensureDir(moe);
+    const joinCount = path.join(moe, 'join-count');
+    const joinN = Number(fs.existsSync(joinCount) ? fs.readFileSync(joinCount, 'utf8') : 0) + 1;
+    fs.writeFileSync(joinCount, String(joinN));
+    if (process.env.FAKE_JOIN_FULL === '1' || joinN <= Number(process.env.FAKE_JOIN_FULL_UNTIL || 0)) {
       process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:req.id,error:{code:-32000,message:'Team Smoke is full (max 10 members)',data:{tool:'moe.join_team'}}}) + '\n');
       process.exit(0);
     }
+    fs.writeFileSync(path.join(moe, 'team-joined'), String(joinN));
     ok({ success: true }); break;
+  }
   case 'chat_channels': ok({ channels: [{ id: 'chan-general', name: 'general', type: 'general' }] }); break;
   case 'chat_join': ok({ success: true }); break;
   case 'chat_read': {
@@ -412,11 +421,13 @@ switch (tool) {
         alreadyAssigned: { taskId: 'task-blocked', title: 'Blocked smoke', status: 'BLOCKED', blockedReason: 'waiting on a peer' },
         nextAction: { tool: 'moe.wait_for_task', reason: 'One task per worker: you already hold task-blocked (BLOCKED).' }
       });
-    } else if (process.env.FAKE_CLAIM_MODE === 'noteam') {
+    } else if (process.env.FAKE_CLAIM_MODE === 'noteam'
+      || (process.env.FAKE_CLAIM_MODE === 'noteam-until-joined' && !fs.existsSync(path.join(moe, 'team-joined')))) {
       // claimNextTask.ts noTeamMembershipRefusal: a SOLO seat whose every
       // candidate sits in an epic+status a live worker already holds.
+      // noteam-until-joined: the same until a join is accepted, then idle.
       ok({ hasNext: false, code: 'NO_TEAM_MEMBERSHIP', nextAction: { tool: 'moe.join_team', args: { workerId: args.workerId }, reason: 'Worker belongs to no team.' } });
-    } else if (process.env.FAKE_CLAIM_MODE === 'idle') {
+    } else if (['idle', 'noteam-until-joined'].includes(process.env.FAKE_CLAIM_MODE)) {
       // Nothing claimable and nothing held: the board state that used to make
       // the wrapper launch a CLI and tell it to claim itself.
       ok({ hasNext: false });
@@ -4035,6 +4046,48 @@ if grep -Fq "joined team 'Smoke'" "$TMP_DIR/wrapper-teamfull.out"; then
   echo "TEAM JOIN FAILED: a refused join was printed as success" >&2
   exit 1
 fi
+# The teamless seat must say so in its taskless outcome, and must have retried
+# the join rather than giving up after the startup refusal.
+if ! grep -Fq 'MOE_TASKLESS_NO_LAUNCH reason=teamless' "$TMP_DIR/wrapper-teamfull.out"; then
+  cat "$TMP_DIR/wrapper-teamfull.out" >&2 || true
+  echo "TEAM JOIN FAILED: a teamless seat's taskless outcome was not reason=teamless" >&2
+  exit 1
+fi
+TEAMFULL_JOINS=$(cat "$TEAMFULL_PROJECT/.moe/join-count" 2>/dev/null || echo 0)
+if [ "$TEAMFULL_JOINS" -lt 2 ]; then
+  cat "$TMP_DIR/wrapper-teamfull.out" >&2 || true
+  echo "TEAM JOIN FAILED: the refused startup join was never retried ($TEAMFULL_JOINS join call(s))" >&2
+  exit 1
+fi
 echo "[team join] ok"
+
+# --- A seat left teamless at startup must heal once the team has room: the
+# join is retried before every claim, and the first accepted join ends the
+# teamless state without a relaunch. Until this case, the startup join was one
+# shot, and a seat launched into a full team idled on "No claimable task ...
+# MOE_TASKLESS_NO_LAUNCH reason=idle" until someone relaunched it, even after
+# the team's maxSize was raised. Twin: postflight.ps1. ---
+echo "[team heal] a refused startup join is retried and heals when the team has room"
+TEAMHEAL_PROJECT="$TMP_DIR/teamheal/project"
+mkdir -p "$TEAMHEAL_PROJECT/.moe/messages"
+printf '{"id":"proj-teamheal","name":"postflight-teamheal","settings":{"autoCommit":false}}\n' > "$TEAMHEAL_PROJECT/.moe/project.json"
+: > "$TEAMHEAL_PROJECT/.moe/messages/chan-general.jsonl"
+printf '{"port":9876,"projectPath":"%s"}\n' "$TEAMHEAL_PROJECT" > "$TEAMHEAL_PROJECT/.moe/daemon.json"
+set +e
+PATH="$TMP_DIR:$PATH" HOME="$HOME_DIR" MOE_PROXY_PATH="$FAKE_PROXY" FAKE_JOIN_FULL_UNTIL=2 FAKE_CLAIM_MODE=noteam-until-joined   MOE_TASKLESS_WAIT_SEC=5 MOE_DISABLE_HEARTBEAT=1 timeout "${POSTFLIGHT_TIMEOUT_SEC}s"   "$WRAPPER"   --project "$TEAMHEAL_PROJECT"   --worker-id worker-teamheal   --role worker   --team Smoke   --no-start-daemon   --command /bin/true   --no-loop   >"$TMP_DIR/wrapper-teamheal.out" 2>&1
+set -e
+for want in 'moe.join_team refused: Team Smoke is full (max 10 members)' 'claim_next_task refused with NO_TEAM_MEMBERSHIP' "joined team 'Smoke' on retry; this seat is no longer teamless." 'MOE_TASKLESS_NO_LAUNCH reason=idle'; do
+  if ! grep -Fq "$want" "$TMP_DIR/wrapper-teamheal.out"; then
+    cat "$TMP_DIR/wrapper-teamheal.out" >&2 || true
+    echo "TEAM HEAL FAILED: expected '$want'" >&2
+    exit 1
+  fi
+done
+if grep -Fq 'reason=teamless' "$TMP_DIR/wrapper-teamheal.out"; then
+  cat "$TMP_DIR/wrapper-teamheal.out" >&2 || true
+  echo "TEAM HEAL FAILED: a healed seat still reported itself teamless" >&2
+  exit 1
+fi
+echo "[team heal] ok"
 
 echo "PASS postflight.sh"

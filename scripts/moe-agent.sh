@@ -1603,6 +1603,12 @@ fi
 # Auto-join role's default team (required for chat_send to accept the workerId)
 # If --team not specified, use role-based default name
 TEAM_CONTEXT=""
+# TEAM_JOINED is the wrapper's view of this seat's membership. It starts false
+# and turns true only on a join the daemon answered without an error; while it
+# is false, retry_team_join re-runs the join before every claim poll.
+TEAM_ID=""
+TEAM_JOINED=false
+TEAM_JOIN_LAST_ERROR=""
 if [ -z "$TEAM" ]; then
     case $ROLE in
         architect) TEAM="Architects" ;;
@@ -1694,17 +1700,22 @@ for line in reversed([l for l in sys.stdin.read().splitlines() if l.strip()]):
 print(err)
 " <<< "$TEAM_JOIN_RESULT" 2>/dev/null || true)
             if [ -n "$TEAM_JOIN_ERROR" ]; then
-                echo -e "${YELLOW}[WARN]${NC} moe.join_team refused: $TEAM_JOIN_ERROR - this seat has NO team, so claim_next_task skips every epic a live worker already holds. Raise the team's maxSize or free a seat, then relaunch."
+                TEAM_JOIN_LAST_ERROR="$TEAM_JOIN_ERROR"
+                echo -e "${YELLOW}[WARN]${NC} moe.join_team refused: $TEAM_JOIN_ERROR - this seat has NO team, so claim_next_task skips every epic a live worker already holds. Raise the team's maxSize or free a seat; a claiming seat retries the join before every claim."
             elif [ -z "$TEAM_JOIN_RESULT" ]; then
+                TEAM_JOIN_LAST_ERROR="no answer"
                 echo -e "${YELLOW}[WARN]${NC} moe.join_team got no answer; team membership is unconfirmed."
             else
+                TEAM_JOINED=true
                 echo -e "${GREEN}[OK]${NC} Worker $WORKER_ID joined team '$TEAM'"
                 TEAM_CONTEXT="You are part of team '$TEAM' (id: $TEAM_ID, role: $ROLE). Team members can work in parallel on the same epic."
             fi
         else
+            TEAM_JOIN_LAST_ERROR="no team id in the moe.create_team answer"
             echo -e "${YELLOW}[WARN]${NC} Failed to parse team ID from response"
         fi
     else
+        TEAM_JOIN_LAST_ERROR="moe.create_team got no answer"
         echo -e "${YELLOW}[WARN]${NC} Failed to create team '$TEAM'"
     fi
 fi
@@ -1971,6 +1982,88 @@ for line in reversed(raw.split('\n')):
         sys.exit(0)
 sys.exit(1)
 " <<< "$raw"
+}
+
+# claim_refused_no_team CLAIM_JSON
+# 0 when a claim answer is the daemon's NO_TEAM_MEMBERSHIP refusal
+# (claimNextTask.ts noTeamMembershipRefusal): the seat is SOLO and every
+# claimable candidate sits in an epic+status a live worker already holds.
+claim_refused_no_team() {
+    [ -n "${1:-}" ] && [ -n "$PYTHON_CMD" ] || return 1
+    $PYTHON_CMD -c "
+import json, sys
+try:
+    sys.exit(0 if (json.loads(sys.stdin.read()) or {}).get('code') == 'NO_TEAM_MEMBERSHIP' else 1)
+except Exception:
+    sys.exit(1)
+" <<< "$1" 2>/dev/null
+}
+
+# seat_is_teamless: 0 when this claiming seat meant to join a team and has not.
+seat_is_teamless() {
+    [ -n "$TEAM" ] && [ "$ROLE" != "governor" ] && [ "$TEAM_JOINED" != true ]
+}
+
+# retry_team_join
+# The startup join is one shot. A seat it left SOLO (the team was full, or the
+# daemon did not answer) stayed solo until someone relaunched it: raising the
+# team's maxSize or freeing a seat changed nothing, and the seat logged
+# "No claimable task ... MOE_TASKLESS_NO_LAUNCH reason=idle" every poll while
+# claim_next_task skipped every epic+status a live worker held. So a claiming
+# seat re-runs the join (and the create, if that never answered) before each
+# claim until the daemon accepts it; join_team is idempotent for a member.
+# Returns 0 once joined. Twin: moe-agent.ps1 Invoke-MoeTeamJoinRetry.
+retry_team_join() {
+    [ "$TEAM_JOINED" = true ] && return 0
+    [ -n "$TEAM" ] && [ "$ROLE" != "governor" ] && [ -n "$PYTHON_CMD" ] || return 1
+    local previous_error="$TEAM_JOIN_LAST_ERROR" failure="" rpc_args rpc_out rpc_err
+    if [ -z "$TEAM_ID" ]; then
+        rpc_args=$($PYTHON_CMD -c "import json,sys; print(json.dumps({'name':sys.argv[1]}))" "$TEAM" 2>/dev/null) || return 1
+        if rpc_out=$(moe_rpc create_team "$rpc_args" 2>/dev/null); then
+            TEAM_ID=$($PYTHON_CMD -c "
+import json, sys
+try:
+    print(json.loads(sys.stdin.read())['team']['id'])
+except Exception:
+    pass
+" <<< "$rpc_out" 2>/dev/null || true)
+            [ -n "$TEAM_ID" ] || failure="no team id in the moe.create_team answer"
+        else
+            failure="moe.create_team got no answer"
+        fi
+    fi
+    if [ -z "$failure" ]; then
+        rpc_args=$($PYTHON_CMD -c "import json,sys; print(json.dumps({'teamId':sys.argv[1],'workerId':sys.argv[2]}))" "$TEAM_ID" "$WORKER_ID" 2>/dev/null) || return 1
+        # moe_rpc prints the tool's answer on stdout and the JSON-RPC error on
+        # stderr; keep only the error.
+        if rpc_err=$(moe_rpc join_team "$rpc_args" 2>&1 >/dev/null); then
+            TEAM_JOINED=true
+            TEAM_JOIN_LAST_ERROR=""
+            TEAM_CONTEXT="You are part of team '$TEAM' (id: $TEAM_ID, role: $ROLE). Team members can work in parallel on the same epic."
+            echo -e "${GREEN}[OK]${NC} Worker $WORKER_ID joined team '$TEAM' on retry; this seat is no longer teamless."
+            return 0
+        fi
+        failure=$($PYTHON_CMD -c "
+import json, sys
+raw = sys.stdin.read().strip()
+msg = ''
+for line in reversed([l for l in raw.splitlines() if l.strip()]):
+    try:
+        e = json.loads(line)
+    except Exception:
+        continue
+    msg = (e.get('message') if isinstance(e, dict) else str(e)) or ''
+    break
+print(msg or raw[:200] or 'no answer')
+" <<< "$rpc_err" 2>/dev/null || echo "no answer")
+    fi
+    TEAM_JOIN_LAST_ERROR="$failure"
+    # Warn when the refusal changes, not on every poll: the per-poll banners
+    # already name a teamless seat.
+    if [ "$failure" != "$previous_error" ]; then
+        echo -e "${YELLOW}[WARN]${NC} moe.join_team retry refused: $failure - this seat is still TEAMLESS; the wrapper retries before the next claim."
+    fi
+    return 1
 }
 
 
@@ -5563,16 +5656,16 @@ except Exception:
             fi
             CLAIM_RESULT='{"hasNext":false}'
         else
+            # A seat the startup join left teamless re-joins before it claims.
+            [ "$TEAM_JOINED" = true ] || retry_team_join || true
             CLAIM_RESULT=$(moe_rpc claim_next_task "$CLAIM_RPC_JSON" 2>/dev/null || echo "")
             # A teamless seat is refused with code NO_TEAM_MEMBERSHIP, which is not an
             # empty queue: say so, or the [no-task] banner below reads as "no work".
-            if [ -n "$CLAIM_RESULT" ] && [ -n "$PYTHON_CMD" ] && $PYTHON_CMD -c "
-import json, sys
-try:
-    sys.exit(0 if (json.loads(sys.stdin.read()) or {}).get('code') == 'NO_TEAM_MEMBERSHIP' else 1)
-except Exception:
-    sys.exit(1)
-" <<< "$CLAIM_RESULT" 2>/dev/null; then
+            # The daemon is the authority on membership, so the next claim poll
+            # re-joins even a seat whose earlier join had succeeded.
+            if claim_refused_no_team "$CLAIM_RESULT"; then
+                TEAM_JOINED=false
+                TEAM_JOIN_LAST_ERROR="${TEAM_JOIN_LAST_ERROR:-claim_next_task answered NO_TEAM_MEMBERSHIP}"
                 echo -e "${YELLOW}[WARN]${NC} claim_next_task refused with NO_TEAM_MEMBERSHIP - this seat has NO team, so claim_next_task skips every epic a live worker already holds; the queue is not empty."
             fi
             receipt_replay || true
@@ -5663,7 +5756,9 @@ except Exception:
                 while [ "$TASKLESS_WAITED" -lt "$MOE_TASKLESS_WAIT_SEC" ]; do
                     sleep "$MOE_TASKLESS_POLL_SEC"
                     TASKLESS_WAITED=$((TASKLESS_WAITED + MOE_TASKLESS_POLL_SEC))
+                    [ "$TEAM_JOINED" = true ] || retry_team_join || true
                     CLAIM_RESULT=$(moe_rpc claim_next_task "$CLAIM_RPC_JSON" 2>/dev/null || echo "")
+                    if claim_refused_no_team "$CLAIM_RESULT"; then TEAM_JOINED=false; fi
                     if [ -z "$CLAIM_RESULT" ]; then
                         # Unreachable daemon/proxy. Falling through to a launch
                         # is exactly the hole being closed, so stop waiting and
@@ -5982,7 +6077,11 @@ except Exception:
                 fi
             elif [ "$HAS_NEXT" = "false" ]; then
                 PREFLIGHT_NO_TASK=true
-                echo -e "${YELLOW}[INFO]${NC} No claimable task for role $ROLE after the wrapper-side wait."
+                if seat_is_teamless; then
+                    echo -e "${YELLOW}[WARN]${NC} No task claimed for role $ROLE after the wrapper-side wait, and this seat is TEAMLESS (moe.join_team: $TEAM_JOIN_LAST_ERROR), so claims skip every epic+status a live worker already holds."
+                else
+                    echo -e "${YELLOW}[INFO]${NC} No claimable task for role $ROLE after the wrapper-side wait."
+                fi
             else
                 echo -e "${YELLOW}[WARN]${NC} Pre-flight claim returned unparseable response; falling back to in-agent claim."
             fi
@@ -6542,6 +6641,8 @@ $PROMPT_BODY"
     if [ "$MOE_SKIP_LAUNCH" = true ]; then
         if [ "$PREFLIGHT_CLAIM_FAILED" = true ]; then
             echo "MOE_TASKLESS_NO_LAUNCH reason=claim-failed role=$ROLE worker=$WORKER_ID - the claim RPC is unreachable; no CLI is launched without a task bound."
+        elif seat_is_teamless; then
+            echo "MOE_TASKLESS_NO_LAUNCH reason=teamless role=$ROLE worker=$WORKER_ID - no task claimed and this seat has NO team (moe.join_team: $TEAM_JOIN_LAST_ERROR), so claims skip every epic+status a live worker already holds; the join is retried before the next claim."
         else
             echo "MOE_TASKLESS_NO_LAUNCH reason=idle role=$ROLE worker=$WORKER_ID - no claimable task and nothing to answer."
         fi

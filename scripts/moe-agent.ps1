@@ -1205,6 +1205,12 @@ if ($Delay -gt 0) {
 # Auto-join role's default team (required for chat_send to accept the workerId)
 # If -Team not specified, use role-based default name
 $teamContext = ""
+# $teamJoined is the wrapper's view of this seat's membership. It starts false
+# and turns true only on a join the daemon answered without an error; while it
+# is false, Invoke-MoeTeamJoinRetry re-runs the join before every claim poll.
+$teamId = ""
+$teamJoined = $false
+$teamJoinLastError = ""
 if (-not $Team) {
     $defaultTeams = @{ architect = "Architects"; worker = "Workers"; qa = "QA"; governor = "Governors" }
     $Team = $defaultTeams[$Role]
@@ -1276,17 +1282,22 @@ if ($Team) {
             # board is full of work. Never print success blind. Twin: moe-agent.sh.
             $joinResult = Invoke-MoeRpcRaw -RpcJson $joinRpc
             if ($joinResult -and $joinResult.PSObject.Properties['error'] -and $joinResult.error) {
-                Write-Host "[WARN] moe.join_team refused: $($joinResult.error.message) - this seat has NO team, so claim_next_task skips every epic a live worker already holds. Raise the team's maxSize or free a seat, then relaunch." -ForegroundColor Yellow
+                $teamJoinLastError = [string]$joinResult.error.message
+                Write-Host "[WARN] moe.join_team refused: $($joinResult.error.message) - this seat has NO team, so claim_next_task skips every epic a live worker already holds. Raise the team's maxSize or free a seat; a claiming seat retries the join before every claim." -ForegroundColor Yellow
             } elseif ($null -eq $joinResult) {
+                $teamJoinLastError = "no answer"
                 Write-Host "[WARN] moe.join_team got no answer; team membership is unconfirmed." -ForegroundColor Yellow
             } else {
+                $teamJoined = $true
                 Write-Host "Worker $WorkerId joined team '$Team'"
                 $teamContext = "You are part of team '$Team' (id: $teamId, role: $Role). Team members can work in parallel on the same epic."
             }
         } else {
+            $teamJoinLastError = "moe.create_team got no answer"
             Write-Host "WARNING: Could not parse team creation response (daemon may not be running)" -ForegroundColor Yellow
         }
     } catch {
+        $teamJoinLastError = "team setup failed: $_"
         Write-Host "WARNING: Failed to set up team: $_" -ForegroundColor Yellow
     }
 }
@@ -1376,6 +1387,66 @@ function Invoke-MoeRpc {
         }
     }
     return $null
+}
+
+# Test-MoeClaimNoTeam CLAIM: $true when a claim answer is the daemon's
+# NO_TEAM_MEMBERSHIP refusal (claimNextTask.ts noTeamMembershipRefusal): the
+# seat is SOLO and every claimable candidate sits in an epic+status a live
+# worker already holds.
+function Test-MoeClaimNoTeam($Claim) {
+    return [bool]($Claim -and $Claim.PSObject.Properties['code'] -and $Claim.code -eq 'NO_TEAM_MEMBERSHIP')
+}
+
+# Test-MoeSeatTeamless: $true when this claiming seat meant to join a team and has not.
+function Test-MoeSeatTeamless {
+    return [bool]($Team -and $Role -ne 'governor' -and -not $script:teamJoined)
+}
+
+# Invoke-MoeTeamJoinRetry
+# The startup join is one shot. A seat it left SOLO (the team was full, or the
+# daemon did not answer) stayed solo until someone relaunched it: raising the
+# team's maxSize or freeing a seat changed nothing, and the seat logged
+# "No claimable task ... MOE_TASKLESS_NO_LAUNCH reason=idle" every poll while
+# claim_next_task skipped every epic+status a live worker held. So a claiming
+# seat re-runs the join (and the create, if that never answered) before each
+# claim until the daemon accepts it; join_team is idempotent for a member.
+# Returns $true once joined. Twin: moe-agent.sh retry_team_join.
+function Invoke-MoeTeamJoinRetry {
+    if ($script:teamJoined) { return $true }
+    if (-not $Team -or $Role -eq 'governor') { return $false }
+    $previousError = $script:teamJoinLastError
+    $failure = ''
+    if (-not $script:teamId) {
+        $createRpc = '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"moe.create_team","arguments":' + (ConvertTo-Json @{ name = $Team } -Compress) + '}}'
+        $created = Invoke-MoeRpcRaw -RpcJson $createRpc
+        try { $script:teamId = [string](($created.result.content[0].text | ConvertFrom-Json -ErrorAction Stop).team.id) } catch { $script:teamId = '' }
+        if (-not $script:teamId) {
+            $failure = if ($null -eq $created) { 'moe.create_team got no answer' } else { 'no team id in the moe.create_team answer' }
+        }
+    }
+    if (-not $failure) {
+        $joinRpc = '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"moe.join_team","arguments":' + (ConvertTo-Json @{ teamId = $script:teamId; workerId = $WorkerId } -Compress) + '}}'
+        $joined = Invoke-MoeRpcRaw -RpcJson $joinRpc
+        if ($joined -and $joined.PSObject.Properties['error'] -and $joined.error) {
+            $failure = [string]$joined.error.message
+            if (-not $failure) { $failure = 'refused' }
+        } elseif ($null -eq $joined) {
+            $failure = 'no answer'
+        } else {
+            $script:teamJoined = $true
+            $script:teamJoinLastError = ''
+            $script:teamContext = "You are part of team '$Team' (id: $($script:teamId), role: $Role). Team members can work in parallel on the same epic."
+            Write-Host "[OK] Worker $WorkerId joined team '$Team' on retry; this seat is no longer teamless." -ForegroundColor Green
+            return $true
+        }
+    }
+    $script:teamJoinLastError = $failure
+    # Warn when the refusal changes, not on every poll: the per-poll banners
+    # already name a teamless seat.
+    if ($failure -ne $previousError) {
+        Write-Host "[WARN] moe.join_team retry refused: $failure - this seat is still TEAMLESS; the wrapper retries before the next claim." -ForegroundColor Yellow
+    }
+    return $false
 }
 
 
@@ -5050,10 +5121,16 @@ do {
             # chat_wait loop).
             $claim = [pscustomobject]@{ hasNext = $false }
         } else {
+            # A seat the startup join left teamless re-joins before it claims.
+            if (-not $teamJoined) { [void](Invoke-MoeTeamJoinRetry) }
             $claim = Invoke-MoeRpc -Tool "claim_next_task" -Args $claimRpcArgs
             # A teamless seat is refused with code NO_TEAM_MEMBERSHIP, which is not an
             # empty queue: say so, or the [no-task] banner below reads as "no work".
-            if ($claim -and $claim.PSObject.Properties['code'] -and $claim.code -eq 'NO_TEAM_MEMBERSHIP') {
+            # The daemon is the authority on membership, so the next claim poll
+            # re-joins even a seat whose earlier join had succeeded.
+            if (Test-MoeClaimNoTeam $claim) {
+                $script:teamJoined = $false
+                if (-not $teamJoinLastError) { $script:teamJoinLastError = 'claim_next_task answered NO_TEAM_MEMBERSHIP' }
                 Write-Host "[WARN] claim_next_task refused with NO_TEAM_MEMBERSHIP - this seat has NO team, so claim_next_task skips every epic a live worker already holds; the queue is not empty." -ForegroundColor Yellow
             }
             Invoke-MoeReceiptReplay
@@ -5121,7 +5198,9 @@ do {
                 while ($tasklessWaited -lt $moeTasklessWaitSec) {
                     Start-Sleep -Seconds $moeTasklessPollSec
                     $tasklessWaited += $moeTasklessPollSec
+                    if (-not $teamJoined) { [void](Invoke-MoeTeamJoinRetry) }
                     $claim = Invoke-MoeRpc -Tool "claim_next_task" -Args $claimRpcArgs
+                    if (Test-MoeClaimNoTeam $claim) { $script:teamJoined = $false }
                     if ($null -eq $claim) {
                         # Unreachable daemon/proxy. Falling through to a launch
                         # is exactly the hole being closed, so stop waiting and
@@ -5286,7 +5365,11 @@ do {
                 Write-Host "[OK] Pre-flight complete. ${preflightVerb}: $preflightTaskId ($preflightTaskTitle)" -ForegroundColor Green
             } else {
                 $preflightNoTask = $true
-                Write-Host "[INFO] No claimable task for role $Role after the wrapper-side wait." -ForegroundColor Yellow
+                if (Test-MoeSeatTeamless) {
+                    Write-Host "[WARN] No task claimed for role $Role after the wrapper-side wait, and this seat is TEAMLESS (moe.join_team: $teamJoinLastError), so claims skip every epic+status a live worker already holds." -ForegroundColor Yellow
+                } else {
+                    Write-Host "[INFO] No claimable task for role $Role after the wrapper-side wait." -ForegroundColor Yellow
+                }
             }
         } elseif ($AutoClaim -and $Role -ne 'governor') {
             # Same hole as the taskless prompt, different trigger: an
@@ -5753,6 +5836,8 @@ $mentionsJson
     if ($moeSkipLaunch) {
         if ($preflightClaimFailed) {
             Write-Host "MOE_TASKLESS_NO_LAUNCH reason=claim-failed role=$Role worker=$WorkerId - the claim RPC is unreachable; no CLI is launched without a task bound." -ForegroundColor Yellow
+        } elseif (Test-MoeSeatTeamless) {
+            Write-Host "MOE_TASKLESS_NO_LAUNCH reason=teamless role=$Role worker=$WorkerId - no task claimed and this seat has NO team (moe.join_team: $teamJoinLastError), so claims skip every epic+status a live worker already holds; the join is retried before the next claim." -ForegroundColor Yellow
         } else {
             Write-Host "MOE_TASKLESS_NO_LAUNCH reason=idle role=$Role worker=$WorkerId - no claimable task and nothing to answer." -ForegroundColor DarkGray
         }

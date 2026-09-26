@@ -99,7 +99,7 @@ $required = [ordered]@{
     'hot reload' = @('wrapper source changed on disk; restarting to load it', 'wrapper_restart')
     # Team join: a refused join (a full team) leaves the seat SOLO, and a solo
     # seat's claims are refused NO_TEAM_MEMBERSHIP; both are named, never hidden.
-    'team join prose' = @('moe.join_team refused: ', 'this seat has NO team, so claim_next_task skips every epic a live worker already holds', 'moe.join_team got no answer; team membership is unconfirmed.', 'claim_next_task refused with NO_TEAM_MEMBERSHIP')
+    'team join prose' = @('moe.join_team refused: ', 'this seat has NO team, so claim_next_task skips every epic a live worker already holds', 'moe.join_team got no answer; team membership is unconfirmed.', 'claim_next_task refused with NO_TEAM_MEMBERSHIP', 'moe.join_team retry refused: ', 'this seat is still TEAMLESS; the wrapper retries before the next claim.', 'on retry; this seat is no longer teamless.', 'MOE_TASKLESS_NO_LAUNCH reason=teamless', 'so claims skip every epic+status a live worker already holds', 'a claiming seat retries the join before every claim.')
     'claimed prompt contract' = @('the wrapper will pick up the next task in a fresh session', 'INTERACTIVE session: this TUI stays open after you stop', 'This interactive session may plan up to', 'MOE_ARCHITECT_TASKS_PER_SESSION')
     # Serena TOOL-tier tools: the editing calls whose successful result is TOOL
     # evidence (old names kept for older Serena installs), and the

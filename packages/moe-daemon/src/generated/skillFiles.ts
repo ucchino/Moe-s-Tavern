@@ -1373,7 +1373,7 @@ Skip aggressively for genuinely trivial work. A typo fix doesn't need 8 steps.
 
 If the task conflicts with an existing rail, requires missing prerequisites, or is ambiguous in a way only a human can resolve — call \`moe.report_blocked\` instead of submitting a bad plan.`,
   'moe-qa-loop/SKILL.md': `---
-# moe-generated: sha=334ed425548b
+# moe-generated: sha=88b348ae3bf3
 name: moe-qa-loop
 description: Use when reviewing a task in REVIEW status as the QA agent. Provides the structured decision flow for moe.qa_approve vs moe.qa_reject, with rejectionDetails that drive a clean fix on the worker side.
 when_to_use: QA agent claims a task in REVIEW status; replaces ad-hoc "looks fine to me" reviews.
@@ -1383,6 +1383,12 @@ allowed-tools: Read, Grep, Glob, Bash(git diff:*), Bash(git log:*), Bash(git sho
 # Moe QA Loop
 
 Your job: read the worker's diff and the task's plan, decide if it's done, and either \`moe.qa_approve\` or \`moe.qa_reject\` with actionable details.
+
+## Verification constraints take precedence
+
+Read current project/epic/task rails before running commands. All test and re-run defaults below apply only where those rails permit them, including during a bounded commit wait. A build/test freeze also forbids tiny repro scripts and targeted tests unless explicitly exempted.
+- When a rail explicitly defers coverage to a batch, audit that coverage hand-forward; do not author/run forbidden per-task tests or reject solely for the authorized deferral. Retain all other DoD checks and report the deferred behavior as unverified.
+- If a required check is prohibited rather than explicitly deferred, use \`moe.report_blocked\` with the restriction and completed evidence; resume REVIEW when resolved. An environmental restriction is not a code defect, and compilation/static review alone cannot replace required runtime evidence. Never treat an unrun check as passing.
 
 ## The decision flow
 

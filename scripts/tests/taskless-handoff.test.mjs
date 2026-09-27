@@ -78,6 +78,15 @@ $statuses=@('WORKING'); $serenaProject=[IO.Path]::GetTempPath()
 }
 
 for (const [engine, executable] of engines) {
+  for (const role of ['worker', 'qa']) {
+    test(`${engine}: claimed ${role} verification obeys project rails`, () => {
+      const { body } = render(engine, executable, { role, claimed: true, noTask: false });
+      assert.match(body, /verification permitted by the current rails/);
+      assert.match(body, /moe\.report_blocked/);
+      assert.match(body, /never treat an unrun check as passing/);
+      assert.doesNotMatch(body, /Run the tests\.|implement it \(write\/edit code, run tests\)/);
+    });
+  }
   for (const role of ['worker', 'qa', 'architect']) {
     test(`${engine}: taskless headless ${role} replies then returns ownership to wrapper`, () => {
       const rendered = render(engine, executable, { role });
@@ -172,6 +181,21 @@ for (const [engine, executable] of engines) {
 // post-flight), and a fix that lands in only one wrapper is the failure mode
 // this repository has shipped before, so every case is checked twice.
 const wrappers = [['moe-agent.ps1', ps], ['moe-agent.sh', sh]];
+for (const [name, src] of wrappers) {
+  test(`${name}: verification restrictions reach both claimed-role prompts`, () => {
+    assert.equal(src.split('verification permitted by the current rails').length - 1, 2);
+    assert.doesNotMatch(src, /Run the tests\. If it passes/);
+  });
+}
+for (const name of ['roles/qa.md', 'roles/qa.reference.md', 'skills/moe-qa-loop/SKILL.md']) {
+  test(`${name}: test defaults cannot override a freeze or batched verification`, () => {
+    const text = readFileSync(new URL(`../../docs/${name}`, import.meta.url), 'utf8');
+    assert.match(text, /Verification constraints take precedence/);
+    assert.match(text, /moe\.report_blocked/);
+    assert.match(text, /never treat an unrun check as passing/i);
+    assert.match(text, /batch/i);
+  });
+}
 for (const [name, src] of wrappers) {
   // The wait is a bounded CLAIM poll, not moe.wait_for_task: the wrappers pipe
   // one JSON line into a fresh moe-proxy and close stdin, and the proxy errors

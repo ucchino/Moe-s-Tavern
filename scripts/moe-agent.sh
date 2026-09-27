@@ -5564,6 +5564,7 @@ while [ "$LOOP_RUNNING" = true ]; do
     MOE_ATTEMPT_ID=""; MOE_ATTEMPT_GENERATION=""
     MOE_RUNNER_ID=$($PYTHON_CMD -c 'import uuid;print("runner-"+uuid.uuid4().hex)')
     PREFLIGHT_TASK_ID=""
+    PREFLIGHT_HELD_TASK_ID=""
     PREFLIGHT_TASK_TITLE=""
     PREFLIGHT_TASK_CHANNEL=""
     PREFLIGHT_CONTEXT=""
@@ -5832,6 +5833,9 @@ except Exception:
                     RESUME_TASK_BLOCKED_REASON="${RESUME_TASK_BLOCKED_REASON:-}"
                 fi
             fi
+            # Remember the observed binding even when resume is suppressed.
+            # This is diagnostic evidence only, never a task baseline.
+            PREFLIGHT_HELD_TASK_ID="$RESUME_TASK_ID"
             # BLOCKED hold: the daemon parked this worker's task via
             # moe.report_blocked while it waits on a shared-resource lease,
             # and the grant path will auto-flip it back to its pre-block
@@ -7679,12 +7683,12 @@ except Exception:
         live_marker_remove "$PREFLIGHT_TASK_ID"
     elif [ "$AUTO_CLAIM" = true ] && [ "$MOE_SKIP_LAUNCH" = false ] && [ -n "$PYTHON_CMD" ]; then
         # -------- Adoption boundary (the alarm, not the fix) --------
-        # This session launched WITHOUT a task, so it took no baseline: the
-        # wrapper cannot tell this session's bytes from a live peer's work in
-        # progress or from dirt that predated it. If it nonetheless ends up
-        # holding a task -- an agent ignoring its chat-only prompt, or a launch
-        # path nobody has written yet -- the honest outcome is a loud refusal,
-        # not silence and not a fabricated baseline. get_context with only a
+        # This session launched WITHOUT a task baseline. It may still retain
+        # a BLOCKED hold seen at preflight; that is NOT a newly adopted task.
+        # Neither binding nor shared dirt proves this session edited anything.
+        # Keep the loud attribution refusal, but report only observed facts.
+        # Never fabricate a baseline or invite a human to discard peer work.
+        # get_context with only a
         # workerId resolves the caller's held task and has no side effects;
         # claim_next_task would CLAIM one, so it must never be used here.
         ADOPT_ARGS=$($PYTHON_CMD -c "import json,sys; print(json.dumps({'workerId':sys.argv[1]}))" "$WORKER_ID" 2>/dev/null || echo "")
@@ -7704,6 +7708,10 @@ except Exception:
 " <<< "$ADOPT_RESULT" 2>/dev/null || echo "")
         fi
         if [ -n "$ADOPTED_TASK_ID" ]; then
+            ADOPTED_BINDING=unverified
+            if [ "$ADOPTED_TASK_ID" = "${PREFLIGHT_HELD_TASK_ID:-}" ]; then
+                ADOPTED_BINDING=retained
+            fi
             ADOPTED_DIRTY=0
             if [ -z "${MOE_TOP:-}" ]; then git_top || true; fi
             if [ -n "${MOE_TOP:-}" ]; then
@@ -7711,13 +7719,13 @@ except Exception:
                     | tr '\0' '\n' | grep -c . || true)
             fi
             if [ "${ADOPTED_DIRTY:-0}" -eq 0 ] 2>/dev/null; then
-                echo "[adoption] Session started with no task and now holds $ADOPTED_TASK_ID, but the tree is clean - nothing to land."
+                echo "[adoption] Task $ADOPTED_TASK_ID binding=$ADOPTED_BINDING has no session baseline, but the tree is clean - nothing to land."
             else
                 # No baseline means no safe attribution, and the task rails
                 # forbid inventing one or staging the tree. Say what that costs.
-                echo "MOE_COMMIT_REFUSED_ADOPTED_NO_BASELINE task=$ADOPTED_TASK_ID worker=$WORKER_ID dirty=$ADOPTED_DIRTY - this session launched without a task, so no pre-edit baseline exists and its bytes CANNOT be separated from a peer's work in progress. Refusing to land; $ADOPTED_DIRTY dirty path(s) stay in the working tree and the NEXT session of $ADOPTED_TASK_ID will snapshot them as pre-existing. A human must land or discard them."
+                echo "MOE_COMMIT_REFUSED_ADOPTED_NO_BASELINE task=$ADOPTED_TASK_ID worker=$WORKER_ID binding=$ADOPTED_BINDING dirty=$ADOPTED_DIRTY - no session baseline exists; refusing to guess attribution or land. Shared dirty paths do not establish this session's ownership. Preserve them and identify their owners before any delivery action."
                 if [ -n "$GENERAL_CHANNEL_ID" ]; then
-                    ADOPT_MSG="@governors ${WORKER_ID}: MOE_COMMIT_REFUSED_ADOPTED_NO_BASELINE task=$ADOPTED_TASK_ID - a session launched with no task ended holding one and left $ADOPTED_DIRTY dirty path(s) unlanded. No pre-edit baseline exists, so the wrapper will not guess which bytes are its own. Needs a human."
+                    ADOPT_MSG="@governors ${WORKER_ID}: MOE_COMMIT_REFUSED_ADOPTED_NO_BASELINE task=$ADOPTED_TASK_ID binding=$ADOPTED_BINDING - no session baseline; refusing to land $ADOPTED_DIRTY unattributed shared dirty path(s). Shared dirty paths do not establish this session's ownership. Preserve them and identify their owners; a retained blocked hold is not a new adoption."
                     moe_rpc chat_send \
                         "$($PYTHON_CMD -c "import json,sys; print(json.dumps({'channel':sys.argv[1],'workerId':sys.argv[2],'content':sys.argv[3]}))" "$GENERAL_CHANNEL_ID" "$WORKER_ID" "$ADOPT_MSG" 2>/dev/null)" \
                         > /dev/null 2>&1 || true

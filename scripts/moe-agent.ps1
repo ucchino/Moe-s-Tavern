@@ -5042,6 +5042,7 @@ do {
     $script:MoeAttemptId = ""; $script:MoeAttemptGeneration = $null
     $script:MoeRunnerId = "runner-" + [guid]::NewGuid().ToString("N")
     $preflightTaskId = ""
+    $preflightHeldTaskId = ""
     $preflightTaskTitle = ""
     $preflightTaskChannel = ""
     $preflightContext = $null
@@ -5233,6 +5234,9 @@ do {
             if (-not $claim.hasNext -and $claim.PSObject.Properties['alreadyAssigned'] -and $claim.alreadyAssigned -and $claim.alreadyAssigned.taskId) {
                 $resumeInfo = $claim.alreadyAssigned
             }
+            # Remember the observed binding even when resume is suppressed.
+            # This is diagnostic evidence only, never a task baseline.
+            $preflightHeldTaskId = if ($resumeInfo) { [string]$resumeInfo.taskId } else { "" }
             # BLOCKED hold: the daemon parked this worker's task via
             # moe.report_blocked while it waits on a shared-resource lease,
             # and the grant path will auto-flip it back to its pre-block
@@ -6683,12 +6687,12 @@ $mentionsJson
         if ($moeGit) { Remove-MoeLiveMarker $moeGit.GitDir $preflightTaskId }
     } elseif ($AutoClaim -and -not $moeSkipLaunch) {
         # -------- Adoption boundary (the alarm, not the fix) --------
-        # This session launched WITHOUT a task, so it took no baseline: the
-        # wrapper cannot tell this session's bytes from a live peer's work in
-        # progress or from dirt that predated it. If it nonetheless ends up
-        # holding a task -- an agent ignoring its chat-only prompt, or a launch
-        # path nobody has written yet -- the honest outcome is a loud refusal,
-        # not silence and not a fabricated baseline. get_context with only a
+        # This session launched WITHOUT a task baseline. It may still retain
+        # a BLOCKED hold seen at preflight; that is NOT a newly adopted task.
+        # Neither binding nor shared dirt proves this session edited anything.
+        # Keep the loud attribution refusal, but report only observed facts.
+        # Never fabricate a baseline or invite a human to discard peer work.
+        # get_context with only a
         # workerId resolves the caller's held task and has no side effects;
         # claim_next_task would CLAIM one, so it must never be used here.
         $adoptedTaskId = ""
@@ -6699,6 +6703,7 @@ $mentionsJson
             }
         } catch { $adoptedTaskId = "" }
         if ($adoptedTaskId) {
+            $adoptedBinding = if ($adoptedTaskId -eq $preflightHeldTaskId) { "retained" } else { "unverified" }
             if ($null -eq $moeGit) { $moeGit = Get-MoeGitTop }
             $adoptedDirty = @()
             if ($moeGit) {
@@ -6708,13 +6713,13 @@ $mentionsJson
                 } catch { $adoptedDirty = @() }
             }
             if ($adoptedDirty.Count -eq 0) {
-                Write-Host "[adoption] Session started with no task and now holds $adoptedTaskId, but the tree is clean - nothing to land." -ForegroundColor Cyan
+                Write-Host "[adoption] Task $adoptedTaskId binding=$adoptedBinding has no session baseline, but the tree is clean - nothing to land." -ForegroundColor Cyan
             } else {
                 # No baseline means no safe attribution, and the task rails
                 # forbid inventing one or staging the tree. Say what that costs.
-                Write-Host "MOE_COMMIT_REFUSED_ADOPTED_NO_BASELINE task=$adoptedTaskId worker=$WorkerId dirty=$($adoptedDirty.Count) - this session launched without a task, so no pre-edit baseline exists and its bytes CANNOT be separated from a peer's work in progress. Refusing to land; $($adoptedDirty.Count) dirty path(s) stay in the working tree and the NEXT session of $adoptedTaskId will snapshot them as pre-existing. A human must land or discard them." -ForegroundColor Red
+                Write-Host "MOE_COMMIT_REFUSED_ADOPTED_NO_BASELINE task=$adoptedTaskId worker=$WorkerId binding=$adoptedBinding dirty=$($adoptedDirty.Count) - no session baseline exists; refusing to guess attribution or land. Shared dirty paths do not establish this session's ownership. Preserve them and identify their owners before any delivery action." -ForegroundColor Red
                 if ($generalChannelId) {
-                    $adoptMsg = "@governors ${WorkerId}: MOE_COMMIT_REFUSED_ADOPTED_NO_BASELINE task=$adoptedTaskId - a session launched with no task ended holding one and left $($adoptedDirty.Count) dirty path(s) unlanded. No pre-edit baseline exists, so the wrapper will not guess which bytes are its own. Needs a human."
+                    $adoptMsg = "@governors ${WorkerId}: MOE_COMMIT_REFUSED_ADOPTED_NO_BASELINE task=$adoptedTaskId binding=$adoptedBinding - no session baseline; refusing to land $($adoptedDirty.Count) unattributed shared dirty path(s). Shared dirty paths do not establish this session's ownership. Preserve them and identify their owners; a retained blocked hold is not a new adoption."
                     try { Invoke-MoeRpc -Tool "chat_send" -Args @{ channel = $generalChannelId; workerId = $WorkerId; content = $adoptMsg } | Out-Null } catch {}
                 }
             }

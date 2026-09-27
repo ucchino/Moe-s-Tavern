@@ -375,6 +375,7 @@ $script:MoeDeregistered = $false
 # it — a local try/finally around one CLI invocation only covers normal
 # unwinds, not this class of abrupt teardown.
 $script:CurrentHeartbeatJob = $null
+$script:HeartbeatStopper = $null
 function Invoke-MoeDeregister {
     # $Reason reaches the daemon verbatim. The self-restart path below passes
     # 'wrapper_restart' (sh twin parity) so a hand-over is distinguishable in
@@ -385,9 +386,7 @@ function Invoke-MoeDeregister {
     # explicitly stopped; unconditional and idempotent, so it runs even when
     # the deregister-proper half below is skipped by MoeDeregistered.
     if ($script:CurrentHeartbeatJob) {
-        try { Stop-Job -Job $script:CurrentHeartbeatJob -ErrorAction SilentlyContinue | Out-Null } catch {}
-        try { Remove-Job -Job $script:CurrentHeartbeatJob -Force -ErrorAction SilentlyContinue | Out-Null } catch {}
-        $script:CurrentHeartbeatJob = $null
+        Stop-HeartbeatSidecar
     }
     if ($script:MoeDeregistered) { return }
     $script:MoeDeregistered = $true
@@ -1952,6 +1951,12 @@ function Start-HeartbeatSidecar {
         [Parameter(Mandatory = $true)][string]$WorkerId
     )
     if ($env:MOE_DISABLE_HEARTBEAT -eq '1') { return $null }
+    # A timed-out stop retains the exact job object. Never overwrite it with
+    # another helper, even though post-flight/CLI dispatch may continue.
+    if ($script:CurrentHeartbeatJob) {
+        Stop-HeartbeatSidecar
+        if ($script:CurrentHeartbeatJob) { return $null }
+    }
     $intervalSec = 60
     if ($env:MOE_HEARTBEAT_INTERVAL_SEC -match '^\d+$') { $intervalSec = [int]$env:MOE_HEARTBEAT_INTERVAL_SEC }
     # Default 24h, and the loop below also stops the moment this wrapper
@@ -2032,12 +2037,44 @@ function Start-HeartbeatSidecar {
 # reference to the job — only the script-scoped one.
 function Stop-HeartbeatSidecar {
     if (-not $script:CurrentHeartbeatJob) { return }
-    try { Stop-Job -Job $script:CurrentHeartbeatJob -ErrorAction SilentlyContinue | Out-Null } catch {}
+    $ownedJob = $script:CurrentHeartbeatJob
+    # PSRemotingJob has no StopJobAsync (including pwsh 7). Run its synchronous
+    # StopJob in a dedicated runspace and bound OUR wait. Keep the pipeline
+    # and exact job object on timeout: disposing/removing a live job can block
+    # too, and spawning a new stop thread on each retry leaks threads.
+    if (-not $script:HeartbeatStopper) {
+        $pipeline = [PowerShell]::Create()
+        try {
+            $null = $pipeline.AddScript('param($ownedJob) $ownedJob.StopJob()').AddArgument($ownedJob)
+            $pending = $pipeline.BeginInvoke()
+            $script:HeartbeatStopper = @{ Job = $ownedJob; Pipeline = $pipeline; Pending = $pending }
+        } catch {
+            $pipeline.Dispose()
+            Write-Host "[WARN] MOE_HEARTBEAT_STOP_TIMEOUT: could not request owned job stop; retaining ownership. $_" -ForegroundColor Yellow
+            return
+        }
+    }
+    $stopper = $script:HeartbeatStopper
+    if ($stopper.Job -ne $ownedJob) {
+        Write-Host '[WARN] MOE_HEARTBEAT_STOP_TIMEOUT: job ownership changed; no unrelated job will be stopped.' -ForegroundColor Yellow
+        return
+    }
+    if (-not $stopper.Pending.AsyncWaitHandle.WaitOne(2000)) {
+        Write-Host '[WARN] MOE_HEARTBEAT_STOP_TIMEOUT: owned job stop pending; retaining ownership, not blocking post-flight or starting a duplicate. Task and lease unchanged.' -ForegroundColor Yellow
+        return
+    }
+    try { $null = $stopper.Pipeline.EndInvoke($stopper.Pending) } catch {}
+    $stopper.Pipeline.Dispose()
+    $script:HeartbeatStopper = $null
+    if ([string]$ownedJob.State -notin @('Completed', 'Failed', 'Stopped')) {
+        Write-Host '[WARN] MOE_HEARTBEAT_STOP_TIMEOUT: owned job is not terminal; retaining ownership.' -ForegroundColor Yellow
+        return
+    }
     # The sidecar's own lines (a reattach and its outcome) are buffered in the job.
     # Read the child job's output, not Receive-Job: on Windows PowerShell 5.1 that
     # throws "The Persistence Path does not exist" when the profile path is absent.
-    try { @($script:CurrentHeartbeatJob.ChildJobs | ForEach-Object { $_.Output }) | ForEach-Object { Write-Host ([string]$_) } } catch {}
-    try { Remove-Job -Job $script:CurrentHeartbeatJob -Force -ErrorAction SilentlyContinue | Out-Null } catch {}
+    try { @($ownedJob.ChildJobs | ForEach-Object { $_.Output }) | ForEach-Object { Write-Host ([string]$_) } } catch {}
+    try { Remove-Job -Job $ownedJob -ErrorAction SilentlyContinue | Out-Null } catch {}
     $script:CurrentHeartbeatJob = $null
 }
 
@@ -5025,6 +5062,11 @@ do {
             # Deregister BEFORE handing over (sh twin parity, same reason
             # string): the next pass registers afresh, and the post-flight
             # above has already landed this session's work.
+            Stop-HeartbeatSidecar
+            if ($script:CurrentHeartbeatJob) {
+                Write-Host '[WARN] MOE_HEARTBEAT_STOP_TIMEOUT: deferring wrapper reload to preserve the pending helper handle.' -ForegroundColor Yellow
+                continue
+            }
             Invoke-MoeDeregister -Reason 'wrapper_restart'
             $script:MoeWrapperRelaunchRequested = $true
             break

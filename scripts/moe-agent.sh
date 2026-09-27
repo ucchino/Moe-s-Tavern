@@ -2339,6 +2339,11 @@ HEARTBEAT_PID=""
 start_heartbeat_sidecar() {
     local worker_id="$1"
     if [ "${MOE_DISABLE_HEARTBEAT:-}" = "1" ]; then return; fi
+    # Never overwrite ownership of a helper whose bounded stop timed out.
+    if [ -n "$HEARTBEAT_PID" ]; then
+        stop_heartbeat_sidecar
+        if [ -n "$HEARTBEAT_PID" ]; then return; fi
+    fi
     local interval_sec="${MOE_HEARTBEAT_INTERVAL_SEC:-60}"
     local max_duration_sec="${MOE_HEARTBEAT_MAX_DURATION_SEC:-86400}"
     local wrapper_pid=$$
@@ -2372,12 +2377,48 @@ start_heartbeat_sidecar() {
     HEARTBEAT_PID=$!
 }
 
+heartbeat_sidecar_running() {
+    # Use this shell's job table, not kill -0 alone: a stale/reused PID must
+    # never authorize signalling a peer. Include stopped jobs (TERM alone
+    # cannot finish one). The sidecar is one direct background subshell.
+    local active
+    [[ "$1" =~ ^[1-9][0-9]*$ ]] || return 1
+    for active in $(jobs -pr; jobs -ps); do
+        if [ "$active" = "$1" ]; then return 0; fi
+    done
+    return 1
+}
+
 stop_heartbeat_sidecar() {
-    if [ -n "$HEARTBEAT_PID" ]; then
-        kill "$HEARTBEAT_PID" 2>/dev/null || true
-        wait "$HEARTBEAT_PID" 2>/dev/null || true
+    local owned_pid="$HEARTBEAT_PID" tick
+    [ -n "$owned_pid" ] || return 0
+    if ! [[ "$owned_pid" =~ ^[1-9][0-9]*$ ]]; then
         HEARTBEAT_PID=""
+        return 0
     fi
+    if heartbeat_sidecar_running "$owned_pid"; then
+        kill -TERM "$owned_pid" 2>/dev/null || true
+        for tick in {1..20}; do
+            heartbeat_sidecar_running "$owned_pid" || break
+            sleep 0.1
+        done
+        if heartbeat_sidecar_running "$owned_pid"; then
+            echo "[WARN] MOE_HEARTBEAT_STOP_ESCALATED: terminating owned helper $owned_pid after TERM grace; task and lease unchanged." >&2
+            kill -KILL "$owned_pid" 2>/dev/null || true
+            for tick in {1..20}; do
+                heartbeat_sidecar_running "$owned_pid" || break
+                sleep 0.1
+            done
+        fi
+        if heartbeat_sidecar_running "$owned_pid"; then
+            echo "[WARN] MOE_HEARTBEAT_STOP_TIMEOUT: owned helper $owned_pid still present; retaining ownership, not blocking post-flight or starting a duplicate." >&2
+            return 0
+        fi
+    fi
+    # Reap only after the job is terminal/absent. An unconditional wait here
+    # stranded a live wrapper for hours when TERM did not stop its helper.
+    wait "$owned_pid" 2>/dev/null || true
+    HEARTBEAT_PID=""
 }
 
 post_flight() {
@@ -5535,6 +5576,10 @@ while [ "$LOOP_RUNNING" = true ]; do
             # held task is released for it (or a peer) to re-claim. The
             # previous post-flight already ran, so nothing is left to land.
             stop_heartbeat_sidecar
+            if [ -n "$HEARTBEAT_PID" ]; then
+                echo "[WARN] MOE_HEARTBEAT_STOP_TIMEOUT: deferring wrapper reload to preserve the pending helper handle." >&2
+                continue
+            fi
             if [ -n "${WORKER_ID:-}" ] && [ -n "${PROJECT:-}" ] && [ -f "$SCRIPT_DIR/moe-call.sh" ]; then
                 bash "$SCRIPT_DIR/moe-call.sh" deregister_worker \
                     "{\"workerId\":\"$WORKER_ID\",\"reason\":\"wrapper_restart\"}" \

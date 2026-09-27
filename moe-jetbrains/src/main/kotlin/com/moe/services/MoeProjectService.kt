@@ -1,6 +1,7 @@
 package com.moe.services
 
 import com.google.gson.JsonObject
+import com.intellij.ide.util.PropertiesComponent
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.components.Service
@@ -56,7 +57,8 @@ class MoeProjectService @JvmOverloads constructor(
         onDaemonShuttingDown = {
             isManualDisconnect = true
             stopAutoRefresh()
-        }
+        },
+        onWorkerDeregistered = { workerId -> agentSeats.acked(workerId) }
     )
     private val commandSender = MoeCommandSender(
         connectedCheck = { connected && wsClient != null },
@@ -74,6 +76,15 @@ class MoeProjectService @JvmOverloads constructor(
             true
         }
     )
+    // Seats launched into this IDE's terminal tabs (see AgentSeatTracker). Lazy:
+    // it reads workspace state, which unit tests on a fake Project do not have.
+    private val agentSeats: AgentSeatTracker by lazy {
+        AgentSeatTracker(
+            load = ::readAgentSeats,
+            save = ::writeAgentSeats,
+            deregister = { workerId -> commandSender.deregisterWorker(workerId, "terminal_closed") }
+        )
+    }
     @Volatile private var isManualDisconnect = false
     @Volatile private var reconnectAttempts = 0
     private val daemonRegistration = MoeDaemonRegistrationTracker(
@@ -266,6 +277,9 @@ class MoeProjectService @JvmOverloads constructor(
                         }
                         sendMessage("GET_STATE", JsonObject())
                         startAutoRefresh()
+                        // Seats whose tab died while no daemon was reachable,
+                        // and at startup every seat of the previous IDE session.
+                        agentSeats.resendGone()
                     }
                 }
 
@@ -589,6 +603,32 @@ class MoeProjectService @JvmOverloads constructor(
 
     fun isConnected(): Boolean = connected
 
+    /** A seat was launched into a terminal tab of this IDE. */
+    fun agentSeatLaunched(workerId: String) {
+        if (!disposed.get()) agentSeats.launched(workerId)
+    }
+
+    /** That seat's terminal tab is gone; its wrapper died without deregistering. */
+    fun agentSeatClosed(workerId: String) {
+        if (!disposed.get()) agentSeats.closed(workerId)
+    }
+
+    private fun readAgentSeats(): List<String> = try {
+        PropertiesComponent.getInstance(project).getValue(AGENT_SEATS_KEY, "")
+            .split(',').filter { it.isNotBlank() }
+    } catch (ex: Exception) {
+        log.debug("Cannot read launched agent seats: ${ex.message}")
+        emptyList()
+    }
+
+    private fun writeAgentSeats(workerIds: List<String>) {
+        try {
+            PropertiesComponent.getInstance(project).setValue(AGENT_SEATS_KEY, workerIds.joinToString(","), "")
+        } catch (ex: Exception) {
+            log.debug("Cannot persist launched agent seats: ${ex.message}")
+        }
+    }
+
     fun restartDaemon() {
         disconnect()
         val base = project.basePath
@@ -612,6 +652,7 @@ class MoeProjectService @JvmOverloads constructor(
     }
 
     companion object {
+        private const val AGENT_SEATS_KEY = "moe.launchedAgentSeats"
 
         fun getInstance(project: IdeaProject): MoeProjectService {
             return project.getService(MoeProjectService::class.java)

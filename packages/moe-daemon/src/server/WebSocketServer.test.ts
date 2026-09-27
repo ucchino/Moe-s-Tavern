@@ -632,6 +632,46 @@ describe('MoeWebSocketServer Integration', () => {
       ws.close();
     });
 
+    it('DEREGISTER_WORKER releases the seat and its task (IDE lost the terminal)', async () => {
+      await state.createWorker({
+        id: 'w-gone',
+        type: 'CLAUDE',
+        projectId: 'proj-test',
+        epicId: 'epic-1',
+        currentTaskId: 'task-1',
+        status: 'CODING',
+      });
+      await state.updateTask('task-1', { status: 'WORKING', assignedWorkerId: 'w-gone' });
+
+      const { ws, ready, nextMessage } = connectAndCollect();
+      await ready;
+      await nextMessage(); // STATE_SNAPSHOT
+
+      async function nextAck() {
+        for (;;) {
+          const parsed = JSON.parse(await nextMessage());
+          if (parsed.type === 'ERROR') throw new Error(`Unexpected ERROR: ${parsed.message}`);
+          if (parsed.type === 'WORKER_DEREGISTERED') return parsed.payload;
+        }
+      }
+
+      ws.send(JSON.stringify({ type: 'DEREGISTER_WORKER', payload: { workerId: 'w-gone', reason: 'terminal_closed' } }));
+      expect(await nextAck()).toEqual({ workerId: 'w-gone', alreadyDead: false, releasedTaskIds: ['task-1'] });
+      // No steps done → the released WORKING row stays WORKING, unassigned.
+      expect(state.getTask('task-1')?.status).toBe('WORKING');
+      expect(state.getTask('task-1')?.assignedWorkerId).toBeNull();
+      expect(state.getWorker('w-gone')?.status).toBe('DEAD');
+
+      // Idempotent, and quiet for a record the startup purge already removed:
+      // the IDE re-sends at every connect until one is acked.
+      ws.send(JSON.stringify({ type: 'DEREGISTER_WORKER', payload: { workerId: 'w-gone' } }));
+      expect(await nextAck()).toEqual({ workerId: 'w-gone', alreadyDead: true, releasedTaskIds: [] });
+      ws.send(JSON.stringify({ type: 'DEREGISTER_WORKER', payload: { workerId: 'w-never-existed' } }));
+      expect(await nextAck()).toEqual({ workerId: 'w-never-existed', alreadyDead: true, releasedTaskIds: [] });
+
+      ws.close();
+    });
+
     it('caps and truncates GET_ACTIVITY_LOG responses', async () => {
       const logPath = path.join(moePath, 'activity.log');
       for (let i = 0; i < 120; i++) {

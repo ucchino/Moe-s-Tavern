@@ -22,7 +22,8 @@ class MoeMessageDispatcher(
     private val currentState: () -> MoeState?,
     private val updateState: (MoeState) -> Unit,
     private val onProjectMismatch: () -> Unit,
-    private val onDaemonShuttingDown: () -> Unit
+    private val onDaemonShuttingDown: () -> Unit,
+    private val onWorkerDeregistered: (workerId: String) -> Unit = {}
 ) {
     private val log = Logger.getInstance(MoeMessageDispatcher::class.java)
     private val gson = Gson()
@@ -435,6 +436,11 @@ class MoeMessageDispatcher(
                 if (isDisposed()) return
                 onDaemonShuttingDown()
                 publishStatus(false, "Daemon shutting down...")
+            }
+            "WORKER_DEREGISTERED" -> {
+                val workerId = json.get("payload")?.takeIf { it.isJsonObject }?.asJsonObject
+                    ?.get("workerId").safeAsString() ?: return
+                onWorkerDeregistered(workerId)
             }
         }
     }

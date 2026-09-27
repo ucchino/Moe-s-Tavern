@@ -17,6 +17,7 @@ import { activeChatWaiters } from '../tools/chatWait.js';
 import { activeResourceWaiters } from '../tools/waitForResource.js';
 import { MAX_TASK_COMMENT_LENGTH } from '../tools/addComment.js';
 import { releaseTaskTool } from '../tools/releaseTask.js';
+import { deregisterWorkerTool } from '../tools/deregisterWorker.js';
 import {
   ACTIVITY_LOG_DEFAULT_MAX_PAYLOAD_CHARS,
   normalizeActivityLogParams,
@@ -138,6 +139,7 @@ export type PluginMessage =
   | { type: 'REORDER_TASK'; payload: { taskId: string; beforeId: string | null; afterId: string | null } }
   | { type: 'APPROVE_TASK'; payload: { taskId: string; expectedPlanRevision?: unknown } }
   | { type: 'RELEASE_TASK'; payload: { taskId: string; reason?: string; force?: boolean } }
+  | { type: 'DEREGISTER_WORKER'; payload: { workerId: string; reason?: string } }
   | { type: 'REJECT_TASK'; payload: { taskId: string; reason: string } }
   | { type: 'REOPEN_TASK'; payload: { taskId: string; reason: string } }
   | { type: 'APPROVE_PROPOSAL'; payload: { proposalId: string } }
@@ -643,6 +645,36 @@ export class MoeWebSocketServer {
           );
           const releasedTask = this.state.getTask(message.payload.taskId);
           this.safeSend(ws, JSON.stringify({ type: 'TASK_UPDATED', payload: releasedTask ? this.servedTask(releasedTask) : releasedTask }));
+          return;
+        }
+
+        case 'DEREGISTER_WORKER': {
+          if (!message.payload || typeof message.payload !== 'object' || typeof message.payload.workerId !== 'string' || !message.payload.workerId) {
+            this.safeSend(ws, JSON.stringify({ type: 'ERROR', message: 'Missing workerId' }));
+            return;
+          }
+          // The IDE sends this for a seat it launched whose terminal is gone (tab
+          // closed, IDE exit or crash): a wrapper killed with its tab never runs
+          // the exit trap that calls moe.deregister_worker, so its worker would keep
+          // every task it held. Same tool as the trap; it takes the mutex itself,
+          // is idempotent, and answers a pruned record as alreadyDead. The ack is
+          // what lets the IDE forget the seat: a send made while it shuts down may
+          // never be processed, so it re-sends at every connect until one lands.
+          const deregisterReason = typeof message.payload.reason === 'string' && message.payload.reason.trim().length > 0
+            ? message.payload.reason.trim()
+            : 'terminal_closed';
+          const deregistered = await deregisterWorkerTool(this.state).handler(
+            { workerId: message.payload.workerId, reason: deregisterReason },
+            this.state
+          ) as { workerId: string; alreadyDead: boolean; releasedTaskIds: string[] };
+          this.safeSend(ws, JSON.stringify({
+            type: 'WORKER_DEREGISTERED',
+            payload: {
+              workerId: deregistered.workerId,
+              alreadyDead: deregistered.alreadyDead,
+              releasedTaskIds: deregistered.releasedTaskIds,
+            },
+          }));
           return;
         }
         case 'REJECT_TASK': {

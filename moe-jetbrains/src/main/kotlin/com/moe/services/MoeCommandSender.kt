@@ -147,6 +147,19 @@ class MoeCommandSender(
         }
         sendMessage("RELEASE_TASK", payload)
     }
+    /**
+     * Deregisters a seat whose terminal this IDE lost. Quiet when disconnected
+     * (no status flap): it also runs from tab disposal while a project closes,
+     * and [AgentSeatTracker] re-sends at the next connect until the daemon acks.
+     */
+    fun deregisterWorker(workerId: String, reason: String) {
+        if (!connectedCheck()) return
+        val payload = JsonObject().apply {
+            addProperty("workerId", workerId)
+            addProperty("reason", reason)
+        }
+        sendMessage("DEREGISTER_WORKER", payload)
+    }
     fun rejectTask(taskId: String, reason: String) {
         if (!ensureConnected()) return
         val payload = JsonObject().apply {

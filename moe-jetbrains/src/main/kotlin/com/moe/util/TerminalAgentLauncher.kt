@@ -2,10 +2,12 @@ package com.moe.util
 
 import com.moe.services.MoeProjectService
 import com.intellij.ide.util.PropertiesComponent
+import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
+import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.util.SystemInfo
 import java.io.File
 import java.lang.reflect.InvocationTargetException
@@ -205,11 +207,12 @@ object TerminalAgentLauncher {
         val tabName = roleTabNames[role] ?: "Moe $role"
         val defaultTeamName = project.name.takeIf { it.isNotBlank() } ?: "Moe Team"
         val teamName = if (isTeamModeEnabled(project)) defaultTeamName else null
-        val command = buildCommand(ctx.basePath, role, ctx.script, ctx.envOverrides, ctx.agentCommand, teamName, codexExec, ctx.wslAgents)
+        val workerId = newWorkerId(role)
+        val command = buildCommand(ctx.basePath, role, ctx.script, ctx.envOverrides, ctx.agentCommand, teamName, codexExec, ctx.wslAgents, workerId)
         try {
             val widget = createTerminalWidget(ctx.manager, ctx.basePath, tabName)
             if (widget != null) {
-                sendCommand(widget, command)
+                if (sendCommand(widget, command)) trackSeat(project, widget, workerId)
             } else {
                 LOG.warn("Failed to create terminal widget for tab \"$tabName\"")
                 Messages.showWarningDialog(
@@ -224,6 +227,28 @@ object TerminalAgentLauncher {
                 "Failed to start terminal \"$tabName\": ${ex.message}",
                 "Moe"
             )
+        }
+    }
+
+    private fun newWorkerId(role: String): String =
+        "$role-${UUID.randomUUID().toString().replace("-", "").substring(0, 8)}"
+
+    /**
+     * A wrapper killed with its tab (tab closed, IDE exit or crash) never runs
+     * the exit trap that deregisters its seat, so the IDE does it: when the tab
+     * is disposed, and at the next daemon connect for a seat whose tab died with
+     * the IDE (see AgentSeatTracker).
+     */
+    private fun trackSeat(project: Project, widget: Any, workerId: String) {
+        val service = MoeProjectService.getInstance(project)
+        service.agentSeatLaunched(workerId)
+        val tab = widget as? Disposable ?: return
+        try {
+            Disposer.register(tab, Disposable { service.agentSeatClosed(workerId) })
+        } catch (ex: Exception) {
+            // The tab was disposed before it could be watched.
+            LOG.debug("Agent tab for $workerId already disposed: ${ex.message}")
+            service.agentSeatClosed(workerId)
         }
     }
 
@@ -270,26 +295,27 @@ object TerminalAgentLauncher {
         agentCommand: String,
         teamName: String? = null,
         codexExec: Boolean = false,
-        wslAgents: Boolean = false
+        wslAgents: Boolean = false,
+        workerId: String = newWorkerId(role)
     ): String {
         if (wslAgents) {
             return when (script.kind) {
                 // Genuine Linux run: bash script + /mnt/<drive>/ paths, typed into
                 // the user's WSL terminal profile.
                 ScriptKind.BASH -> buildWslBashCommand(
-                    basePath, role, script.file.absolutePath, envOverrides, agentCommand, teamName, codexExec
+                    basePath, role, script.file.absolutePath, envOverrides, agentCommand, teamName, codexExec, workerId
                 )
                 // Graceful degrade when only the .ps1 exists: run it on the Windows
                 // side via WSL interop, with bash-safe escaping so the line survives
                 // being typed into a bash prompt.
                 ScriptKind.POWERSHELL -> bashWrapPowerShell(
-                    buildPowerShellCommand(basePath, role, script.file, envOverrides, agentCommand, teamName, codexExec)
+                    buildPowerShellCommand(basePath, role, script.file, envOverrides, agentCommand, teamName, codexExec, workerId)
                 )
             }
         }
         return when (script.kind) {
-            ScriptKind.POWERSHELL -> buildPowerShellCommand(basePath, role, script.file, envOverrides, agentCommand, teamName, codexExec)
-            ScriptKind.BASH -> buildBashCommand(basePath, role, script.file.absolutePath, envOverrides, agentCommand, teamName, codexExec)
+            ScriptKind.POWERSHELL -> buildPowerShellCommand(basePath, role, script.file, envOverrides, agentCommand, teamName, codexExec, workerId)
+            ScriptKind.BASH -> buildBashCommand(basePath, role, script.file.absolutePath, envOverrides, agentCommand, teamName, codexExec, workerId)
         }
     }
 
@@ -300,7 +326,8 @@ object TerminalAgentLauncher {
         envOverrides: Map<String, String>,
         agentCommand: String,
         teamName: String? = null,
-        codexExec: Boolean = false
+        codexExec: Boolean = false,
+        workerId: String = newWorkerId(role)
     ): String = buildBashCommand(
         toWslPath(basePath),
         role,
@@ -308,7 +335,8 @@ object TerminalAgentLauncher {
         envOverrides.mapValues { (_, v) -> toWslPath(v) },
         agentCommand,
         teamName,
-        codexExec
+        codexExec,
+        workerId
     )
 
     internal fun buildWslBashCommandForTest(
@@ -348,7 +376,8 @@ object TerminalAgentLauncher {
         envOverrides: Map<String, String>,
         agentCommand: String,
         teamName: String? = null,
-        codexExec: Boolean = false
+        codexExec: Boolean = false,
+        workerId: String = newWorkerId(role)
     ): String {
         val projectArg = psQuote(basePath)
         val scriptArg = psQuote(script.absolutePath)
@@ -360,7 +389,6 @@ object TerminalAgentLauncher {
         } else {
             ""
         }
-        val workerId = "$role-${UUID.randomUUID().toString().replace("-", "").substring(0, 8)}"
         val workerIdArg = psQuote(workerId)
         val teamArg = if (teamName != null) " -Team ${psQuote(teamName)}" else ""
         val execArg = if (codexExec) {
@@ -437,7 +465,8 @@ object TerminalAgentLauncher {
         envOverrides: Map<String, String>,
         agentCommand: String,
         teamName: String? = null,
-        codexExec: Boolean = false
+        codexExec: Boolean = false,
+        workerId: String = newWorkerId(role)
     ): String {
         val projectArg = shQuote(basePath)
         val scriptArg = shQuote(scriptPath)
@@ -449,7 +478,6 @@ object TerminalAgentLauncher {
         } else {
             ""
         }
-        val workerId = "$role-${UUID.randomUUID().toString().replace("-", "").substring(0, 8)}"
         val workerIdArg = shQuote(workerId)
         val teamArg = if (teamName != null) " --team ${shQuote(teamName)}" else ""
         val execArg = if (codexExec) {

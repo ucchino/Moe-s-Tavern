@@ -148,17 +148,16 @@ class ChatWaitSession {
 
   private isRelevant(event: { type: string; payload?: unknown; routingTargets?: string[] }): boolean {
     const message = event.payload as ChatMessage;
+    const targets = event.routingTargets ?? message.mentions ?? [];
     if (this.ctx.channelSet) {
-      // Caller subscribed to specific channels — the subscription set IS the
-      // filter. Any message in those channels is relevant (this matches the
-      // governor's "watch #governors for any signal" expectation in
-      // docs/roles/governor.md). Don't wake on the worker's OWN posts, though —
-      // that returns prematurely in a post-then-wait loop.
-      return this.ctx.channelSet.has(message.channel) && message.sender !== this.ctx.workerId;
+      // Watch ambient channel traffic AND mentions routed to this worker
+      // anywhere (including task channels). Use routingTargets so group
+      // expansion and loop-guard suppression remain authoritative.
+      return message.sender !== this.ctx.workerId &&
+        (this.ctx.channelSet.has(message.channel) || targets.includes(this.ctx.workerId));
     }
     // No explicit channel filter — fall back to the conservative mention/human
     // filter so workers in broad-scope chat_wait aren't woken on every chatter.
-    const targets = event.routingTargets ?? message.mentions ?? [];
     return targets.includes(this.ctx.workerId) || message.sender === 'human';
   }
 
@@ -327,7 +326,7 @@ export function chatWaitTool(_state: StateManager): ToolDefinition {
       type: 'object',
       properties: {
         workerId: { type: 'string', description: 'Your worker ID (messages mentioning you will trigger)' },
-        channels: { type: 'array', items: { type: 'string' }, description: 'Optional channel filter: channel ids, or names in either "governors" or "#governors" form' },
+        channels: { type: 'array', items: { type: 'string' }, description: 'Optional ambient channel filter: ids or names such as "#governors". Routed mentions still arrive from any channel.' },
         sinceId: { type: 'string', description: 'Explicit catch-up cursor: overrides the stored per-channel cursor' },
         timeoutMs: { type: 'number', description: 'Max wait time in ms (default 300000, max 600000)' },
         maxContentChars: {

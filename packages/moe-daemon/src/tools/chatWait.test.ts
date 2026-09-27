@@ -88,6 +88,19 @@ describe('moe.chat_wait', () => {
   });
 
   describe('backfill on entry', () => {
+    for (const mention of ['direct', 'role'] as const) {
+      it(`returns unread ${mention} mentions outside the watched channels`, async () => {
+        if (mention === 'role') {
+          const team = await state.createTeam({ name: 'Governors', role: 'governor' });
+          await state.addTeamMember(team.id, WORKER_ID);
+        }
+        const token = mention === 'role' ? 'governors' : WORKER_ID;
+        const message = await post(channels.workers, `@${token} review this task`);
+        const result = await wait({ channels: [channels.general] });
+        expect(result.messages?.map(m => m.id)).toEqual([message.id]);
+        expect(cursorFor(channels.workers)).toBe(message.id);
+      });
+    }
     it('returns a message posted before the call instead of blocking (channel-filtered)', async () => {
       const message = await post(channels.general, 'landed before the wait', 'system');
 
@@ -129,6 +142,35 @@ describe('moe.chat_wait', () => {
   });
 
   describe('burst on wake', () => {
+    for (const mention of ['direct', 'role'] as const) {
+      it(`wakes for a routed ${mention} mention outside the watched channels`, async () => {
+        if (mention === 'role') {
+          const team = await state.createTeam({ name: 'Governors', role: 'governor' });
+          await state.addTeamMember(team.id, WORKER_ID);
+        }
+        const token = mention === 'role' ? 'governors' : WORKER_ID;
+        const pending = wait({ channels: [channels.general] });
+        await new Promise(resolve => setTimeout(resolve, 30));
+        const message = await post(channels.workers, `@${token} live question`);
+        const result = await pending;
+        expect(result.messages?.map(m => m.id)).toEqual([message.id]);
+        expect(cursorFor(channels.workers)).toBe(message.id);
+      });
+    }
+
+    it('ignores unrelated outside chatter and self mentions until a watched message arrives', async () => {
+      let settled = false;
+      const pending = wait({ channels: [channels.general] }).then(result => { settled = true; return result; });
+      await new Promise(resolve => setTimeout(resolve, 30));
+      await post(channels.workers, 'unrelated outside human message');
+      await post(channels.workers, `@${WORKER_ID} my own reply`, WORKER_ID);
+      await new Promise(resolve => setTimeout(resolve, 30));
+      expect(settled).toBe(false);
+      expect(cursorFor(channels.workers)).toBeUndefined();
+      const message = await post(channels.general, 'watched status', 'system');
+      expect((await pending).messages?.map(m => m.id)).toEqual([message.id]);
+      expect(cursorFor(channels.workers)).toBeUndefined();
+    });
     it('returns every message that arrived, not just the one that woke the waiter', async () => {
       const waitPromise = wait({});
       // Let the (empty) entry drain finish so this exercises the wake path.

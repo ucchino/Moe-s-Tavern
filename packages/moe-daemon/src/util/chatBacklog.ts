@@ -128,7 +128,12 @@ function backlogChannelIds(
   channelSet: Set<string> | null,
   explicitSinceId?: string
 ): string[] {
-  if (channelSet) return Array.from(channelSet);
+  if (channelSet) {
+    // A channel filter selects ambient traffic, not where someone may address
+    // the worker. Unread channels are already mention-routed (including groups).
+    const unread = state.getUnreadSummary(workerId);
+    return [...new Set([...channelSet, ...Object.keys(unread?.channels ?? {})])];
+  }
   // An explicit catch-up must not be gated on unread bookkeeping that a
   // reconnect (or a prior chat_read) already cleared.
   if (explicitSinceId) return state.getChannels().map((channel) => channel.id);
@@ -140,8 +145,8 @@ function backlogChannelIds(
  * Scan every watched channel from the caller's cursor forward.
  *
  * No mention/human relevance filter is applied: the unread-summary path is
- * already routed, the channelSet path is deliberately "any message in my
- * channels", and an explicit sinceId means "give me everything since X"
+ * already routed, the channelSet path includes watched traffic plus routed
+ * unread channels, and an explicit sinceId means "give me everything since X"
  * (stored messages carry RAW mention tokens, so filtering here would drop the
  * group pings a governor is catching up on).
  */

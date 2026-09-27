@@ -2159,7 +2159,7 @@ Long-poll for chat messages mentioning this worker or from humans. **Burst-aware
 ```typescript
 {
   workerId: string,     // Required: your worker ID
-  channels?: string[],  // Optional: channel filter
+  channels?: string[],  // Optional: ambient channel filter; routed mentions arrive from anywhere
   sinceId?: string,     // Optional: explicit catch-up cursor, overrides stored per-channel cursors
   timeoutMs?: number,   // Max wait (default 300000, max 600000)
   maxContentChars?: number // Max chars/message in response (default 1000, 0 = full)
@@ -2177,7 +2177,7 @@ Long-poll for chat messages mentioning this worker or from humans. **Burst-aware
 - Follows the same long-poll pattern as `moe.wait_for_task`
 - **Backfill on entry**: the caller's per-channel cursors are drained before blocking, so a message that landed between the last `chat_read` and this call comes back immediately. The subscription is installed *before* the drain, so nothing arriving mid-drain is lost.
 - **Full burst on wake**: waking re-drains every watched channel and returns the whole burst (up to 100 messages) in one response, ordered oldest-first. `hasMore: true` means the burst was capped and another call has more waiting.
-- When `channels` is explicitly provided, wakes on **any** message in those channels — the subscription set is the filter (matches the governor `#governors` watch pattern).
+- When `channels` is explicitly provided, wakes on **any** non-self message in those channels **or a mention routed to the worker in any channel** (including direct and role-group mentions in task channels). Entry and wake drains include routed unread channels as well as the watched channels, preserving their surrounding context. Unrelated outside traffic and self-posts do not wake a filtered waiter; routing/loop-guard decisions remain authoritative.
 - When `channels` is omitted (broad scope), only wakes for messages where `workerId` is in `mentions` or `sender` is `"human"`. The *drain* applies no such filter: once a channel is in scope it returns everything since the cursor, so group pings stored as raw mention tokens are not silently dropped.
 - `sinceId` is an explicit catch-up override: it replaces the stored cursor for every scanned channel and, with no `channels` filter, widens the scan to every channel (a reconnect has usually already cleared the unread bookkeeping the broad-scope scan relies on). A `sinceId` that is unknown in a given channel degrades to that channel's most recent window — useful as a resync, but it can rewind that channel's cursor and re-deliver messages.
 - **Cursors advance only for delivered messages the drain actually read.** A capped burst stops the cursor at the last message returned; a channel the drain never scanned moves no cursor at all; and a message delivered straight off the event bus (the wake trigger, or anything that arrived mid-drain) never moves its channel's cursor, because it says nothing about the messages between it and where the scan stopped — a channel with more than 50 waiting would otherwise be skipped. Such a message is simply re-delivered on the next call. Unread counts are cleared only for channels that were fully drained. A failed cursor write is logged and the messages are still returned (a duplicate delivery beats a lost one).

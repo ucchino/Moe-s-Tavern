@@ -447,7 +447,7 @@ interface Task {
   // Commit ledger — written only by moe.record_commit (wrapper post-flight)
   // and moe.declare_files; the daemon stores what their callers report and never checks it against git. Additive, no
   // schemaVersion bump. Never cleared by reopen/qa_reject.
-  commits?: TaskCommit[];        // Every landed commit (completion/checkpoint/rescue); idempotent by sha,
+  commits?: TaskCommit[];        // Every landed commit (completion/checkpoint/rescue); idempotent by sha and kind,
                                  // capped at MAX_COMMITS_PER_TASK (50, newest kept)
   declaredFiles?: string[];      // moe.declare_files assertions (ASSERTED attribution tier)
   touchedFiles?: string[];       // Tool-write harvest (stream-json Edit/Write paths), unioned across sessions (ASSERTED tier)

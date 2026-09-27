@@ -655,7 +655,8 @@ All seven are required; `additionalProperties` is `false`.
 ```
 
 **Notes:**
-- On `committed`: appends a `TaskCommit` to `task.commits` (idempotent by `sha` → `duplicate: true`; capped at `MAX_COMMITS_PER_TASK`, default 50, newest kept — same env pattern as `MAX_COMMENTS_PER_TASK`), unions `paths − inferredPaths` into `task.filesModified` (returned as `addedPaths`), `inferredPaths` into `task.inferredPaths` (never promoted to asserted), `touchedPaths` into `task.touchedFiles`, and **replaces** `task.unattributedPaths`.
+- On `committed`: appends a `TaskCommit` to `task.commits` (idempotent by (`sha`, `kind`) → `duplicate: true`; capped at `MAX_COMMITS_PER_TASK`, default 50, newest kept — same env pattern as `MAX_COMMENTS_PER_TASK`), unions `paths − inferredPaths` into `task.filesModified` (returned as `addedPaths`), `inferredPaths` into `task.inferredPaths` (never promoted to asserted), `touchedPaths` into `task.touchedFiles`, and **replaces** `task.unattributedPaths`.
+- The same SHA can have distinct checkpoint/rescue/completion events. An explicit completion report adds its own provenance/ref/push evidence without rewriting the earlier event; a checkpoint alone is never promoted automatically. Same-kind replays retain the original event and only upgrade pushed/treeId evidence. Git reachability is still verified by the caller, not by this tool.
 - Every outcome — including `nothing`, `refused` and `failed` — sets `task.lastCommitOutcome = { outcome, kind, code?, sessionId, at }`, so "the wrapper never got here" is distinguishable from "it refused".
 - Persisted with activity event `TASK_COMMIT_RECORDED`; refreshes the calling worker's `lastActivityAt`.
 - Chat: one line to the task channel for every call; a `#governors` line (rate-limited to once per task per 24h) when `unattributedPaths` is non-empty, `kind` is `rescue`, or `outcome` is not `committed`/`nothing`. Chat failures never fail the record.

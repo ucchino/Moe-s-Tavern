@@ -5,6 +5,7 @@ import { getActivityLogTool } from './getActivityLog.js';
 import { getTools } from './index.js';
 import { MAX_COMMITS_PER_TASK } from '../state/validators.js';
 import { buildReopenClearingUpdates } from '../util/reopen.js';
+import { completionCommitsForReview } from '../delivery/policy.js';
 import type { TaskCommit } from '../types/schema.js';
 
 interface RecordResult {
@@ -108,7 +109,7 @@ describe('moe.record_commit', () => {
     expect(Date.parse(h.state.getWorker('worker-1')!.lastActivityAt)).toBeGreaterThan(Date.parse('2021-01-01T00:00:00.000Z'));
   });
 
-  it('is idempotent by sha (exact or abbreviated) and only ever upgrades pushed/treeId', async () => {
+  it('is idempotent by sha (exact or abbreviated) within a kind and only ever upgrades pushed/treeId', async () => {
     await seed();
     await record({ paths: ['src/a.ts'], pushed: false });
     const dup = await record({ sha: SHA_A.slice(0, 12), paths: ['src/a.ts', 'src/c.ts'], pushed: true, treeId: SHA_B });
@@ -126,6 +127,44 @@ describe('moe.record_commit', () => {
     // A later pushed:false never downgrades.
     await record({ pushed: false });
     expect(h.state.getTask('task-1')!.commits![0].pushed).toBe(true);
+  });
+
+  it('records completion of an already checkpointed SHA without rewriting its history', async () => {
+    await seed({ reviewStartedAt: '2026-09-27T08:54:00.000Z' });
+    vi.spyOn(Date.prototype, 'toISOString').mockReturnValue('2026-09-27T08:34:00.000Z');
+    await record({ kind: 'checkpoint', status: 'BLOCKED', pushed: false, paths: ['src/a.ts'] });
+    const checkpoint = structuredClone(h.state.getTask('task-1')!.commits![0]);
+    expect(completionCommitsForReview(h.state.getTask('task-1')!)).toEqual([]);
+
+    vi.spyOn(Date.prototype, 'toISOString').mockReturnValue('2026-09-27T09:07:00.000Z');
+    const completion = await record({ sha: SHA_A.slice(0, 12), paths: ['src/a.ts'], pushed: true });
+    expect(completion.duplicate).toBe(false);
+    expect(completion.commitCount).toBe(2);
+    const commits = h.state.getTask('task-1')!.commits!;
+    expect(commits[0]).toEqual(checkpoint);
+    expect(commits[1]).toMatchObject({ kind: 'completion', status: 'REVIEW', pushed: true,
+      recordedAt: '2026-09-27T09:07:00.000Z', sessionId: base.sessionId });
+    expect(completionCommitsForReview(h.state.getTask('task-1')!)).toEqual([commits[1]]);
+
+    // Exact/abbreviated replays merge only their own kind; a stale checkpoint
+    // cannot overwrite completion provenance or downgrade its pushed state.
+    expect((await record({ sha: SHA_A, pushed: false })).duplicate).toBe(true);
+    expect((await record({ kind: 'checkpoint', pushed: false })).duplicate).toBe(true);
+    expect(h.state.getTask('task-1')!.commits).toEqual(commits);
+  });
+
+  it('does not inherit rescue push or ref evidence when the same SHA is later completed', async () => {
+    await seed();
+    await record({ kind: 'rescue', ref: 'refs/moe/rescue/task-1/stamp', pushed: true });
+    const rescue = structuredClone(h.state.getTask('task-1')!.commits![0]);
+    expect(completionCommitsForReview(h.state.getTask('task-1')!)).toEqual([]);
+    await record({ pushed: undefined });
+    const commits = h.state.getTask('task-1')!.commits!;
+    expect(commits).toHaveLength(2);
+    expect(commits[0]).toEqual(rescue);
+    expect(commits[1].kind).toBe('completion');
+    expect(commits[1].ref).toBe(base.ref);
+    expect(commits[1].pushed).toBeUndefined();
   });
 
   it(`caps the ledger at MAX_COMMITS_PER_TASK (${MAX_COMMITS_PER_TASK}), newest kept`, async () => {

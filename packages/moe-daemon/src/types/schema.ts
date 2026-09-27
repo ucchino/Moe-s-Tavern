@@ -531,7 +531,7 @@ export type TaskCommitOutcome = 'committed' | 'nothing' | 'refused' | 'failed';
 
 /**
  * One git landing recorded by moe.record_commit (the agent wrapper's
- * post-flight, best-effort). Append-only ledger, idempotent by sha, capped at
+ * post-flight, best-effort). Append-only ledger, idempotent by sha and kind, capped at
  * MAX_COMMITS_PER_TASK (newest kept). `kind`: 'completion' = feat|fix commit on
  * the shared branch after a worker session ended in REVIEW/DONE; 'checkpoint'
  * = wip commit on any other exit; 'rescue' = snapshot on

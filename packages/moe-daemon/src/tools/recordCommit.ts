@@ -104,7 +104,7 @@ function sameSha(a: string, b: string): boolean {
 export function recordCommitTool(_state: StateManager): ToolDefinition {
   return {
     name: 'moe.record_commit',
-    description: 'Record the outcome of the agent wrapper\'s git landing for a task — a completion commit (feat|fix on the shared branch), a wip checkpoint, or a rescue ref (refs/moe/rescue/<taskId>/<ts>) — including refused/failed/nothing outcomes. On committed: appends task.commits (idempotent by sha, capped, newest kept), unions the non-inferred paths into task.filesModified, and keeps task.inferredPaths / touchedFiles / unattributedPaths current; every outcome stamps task.lastCommitOutcome. Guard-exempt (runs after complete_task when QA may already own the REVIEW task, and on unassigned BLOCKED tasks) and allowed in every status. Posts one line to the task channel and a rate-limited #governors alert on unattributed paths, rescue refs, or refused/failed outcomes.',
+    description: 'Record the outcome of the agent wrapper\'s git landing for a task — a completion commit (feat|fix on the shared branch), a wip checkpoint, or a rescue ref (refs/moe/rescue/<taskId>/<ts>) — including refused/failed/nothing outcomes. On committed: appends task.commits (idempotent by sha and kind, capped, newest kept), unions the non-inferred paths into task.filesModified, and keeps task.inferredPaths / touchedFiles / unattributedPaths current; every outcome stamps task.lastCommitOutcome. Guard-exempt (runs after complete_task when QA may already own the REVIEW task, and on unassigned BLOCKED tasks) and allowed in every status. Posts one line to the task channel and a rate-limited #governors alert on unattributed paths, rescue refs, or refused/failed outcomes.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -219,10 +219,12 @@ export function recordCommitTool(_state: StateManager): ToolDefinition {
       let addedPaths: string[] = [];
 
       if (outcome === 'committed' && sha && ref) {
-        const existingIdx = commits.findIndex((c) => typeof c?.sha === 'string' && sameSha(c.sha, sha));
+        const existingIdx = commits.findIndex((c) => c?.kind === kind && typeof c.sha === 'string' && sameSha(c.sha, sha));
         if (existingIdx >= 0) {
-          // Idempotent re-record (resume relaunch, post-push re-report): keep
-          // the original entry, only ever upgrade pushed/treeId.
+          // Replays within one landing kind keep their original provenance.
+          // A checkpoint/rescue SHA explicitly reported as completion is a
+          // separate event: do not swallow it or rewrite its earlier history.
+          // Only pushed/treeId upgrade within an existing (sha, kind) entry.
           duplicate = true;
           const existing = commits[existingIdx];
           commits[existingIdx] = {
@@ -309,7 +311,7 @@ export function recordCommitTool(_state: StateManager): ToolDefinition {
       const detail = `${message ? ` — ${message}` : ''}`;
       switch (outcome) {
         case 'committed':
-          lines.push(`📦 ${kind} commit recorded for ${task.id}: ${shortSha} on ${ref} — ${pathsRead.paths.length} path(s), ${inferredRead.paths.length} inferred, ${skipped.length} skipped, ${unattributed.length} unattributed${pushedNote}${duplicate ? ' (duplicate sha, merged)' : ''}`);
+          lines.push(`📦 ${kind} commit recorded for ${task.id}: ${shortSha} on ${ref} — ${pathsRead.paths.length} path(s), ${inferredRead.paths.length} inferred, ${skipped.length} skipped, ${unattributed.length} unattributed${pushedNote}${duplicate ? ' (duplicate sha and kind, merged)' : ''}`);
           break;
         case 'nothing':
           lines.push(`ℹ️ ${kind} landing for ${task.id}: nothing to commit${code ? ` (${code})` : ''}${detail}`);

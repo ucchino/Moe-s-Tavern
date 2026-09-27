@@ -93,4 +93,31 @@ describe('QA empty-task.commits policy — the two documents agree', () => {
     expect(reference).toContain('2026-09-06');
     expect(reference).toContain('one completion in three');
   });
+
+  it('records isolated-clone delivery before considering shared-tree fallback', () => {
+    for (const [label, text] of [
+      ...generatedSubjects(),
+      [QA_REFERENCE_KEY, lf(ROLE_DOCS[QA_REFERENCE_KEY])],
+      ...(hasDocs ? [...diskSubjects(), ['docs/roles/qa.reference.md', readDoc('roles', 'qa.reference.md')]] : []),
+    ]) {
+      expect(text, label).toContain('isolated-clone delivery');
+      expect(text, label).toContain('fresh remote fetch');
+      expect(text, label).toContain('record_commit');
+      expect(text, label).toContain('Never self-land clone-delivered bytes');
+      expect(text, label).toContain('rails permit');
+    }
+  });
+
+  it('workers explicitly own the isolated-clone ledger exception', () => {
+    for (const name of ['worker.md', 'worker.reference.md']) {
+      const subjects = [lf(ROLE_DOCS[name]), ...(hasDocs ? [readDoc('roles', name)] : [])];
+      for (const text of subjects) {
+        expect(text, name).toContain('isolated-clone delivery');
+        expect(text, name).toContain('moe.record_commit');
+        expect(text, name).toContain('fresh remote fetch');
+        expect(text, name).toContain('sessionId');
+        expect(text, name).not.toContain('are wrapper-called — do not call them yourself');
+      }
+    }
+  });
 });

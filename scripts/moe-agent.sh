@@ -2410,14 +2410,14 @@ post_flight() {
 }
 
 # announce_push_failure TASK_ID
-# Best-effort loud, daemon-visible warning that auto-commit pushed nothing for a
-# task that has already flipped to REVIEW. The task is reviewable in the board
-# but its code never reached the remote -- QA would review stale/missing work.
+# A failed branch push does not prove a task commit is local-only: completion
+# also syncs after a nothing/refused landing, and an isolated delivery may
+# already be on the remote. Keep the warning, but require SHA verification.
 # Posts to #general via chat_send (the daemon broadcasts it to every connected
 # client) and always returns 0 so it never aborts the loop.
 announce_push_failure() {
     local task_id="$1"
-    local msg="PUSH FAILED for task $task_id -- committed locally only; do not review until pushed"
+    local msg="PUSH FAILED for task $task_id -- branch sync failed; task delivery is not established by this push. Verify recorded task SHAs against the remote before review; existing local commits may still need pushing."
     if [ -n "${GENERAL_CHANNEL_ID:-}" ]; then
         moe_rpc chat_send \
             "$($PYTHON_CMD -c "import json,sys; print(json.dumps({'channel':sys.argv[1],'workerId':sys.argv[2],'content':sys.argv[3]}))" \

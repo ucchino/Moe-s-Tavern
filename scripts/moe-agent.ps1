@@ -3796,9 +3796,9 @@ function Push-MoeBranch([string]$Top, [string]$Branch, [string]$Kind, [string]$T
     if ($script:MoePushResult.Length -gt 500) { $script:MoePushResult = $script:MoePushResult.Substring(0, 500) }
     Write-Host "[WARN] git push still failing (auth? network? conflict?) — resolve and push manually." -ForegroundColor Yellow
     if ($Kind -eq 'completion') {
-        # Loud, daemon-visible warning: the task is reviewable on the board
-        # but its code never reached the remote.
-        Send-MoeGeneralChat "PUSH FAILED for task $TaskId — committed locally only; do not review until pushed"
+        # Completion also syncs after nothing/refused landings; an isolated
+        # delivery may already be remote. A failed push alone cannot decide it.
+        Send-MoeGeneralChat "PUSH FAILED for task $TaskId — branch sync failed; task delivery is not established by this push. Verify recorded task SHAs against the remote before review; existing local commits may still need pushing."
     } else {
         Write-Host "[WARN] CHECKPOINT-UNPUSHED task=$TaskId — checkpoint committed locally only on $Branch; push when the remote is reachable" -ForegroundColor Yellow
         Send-MoeGeneralChat "CHECKPOINT-UNPUSHED task=$TaskId — checkpoint committed locally only on $Branch; push when the remote is reachable"

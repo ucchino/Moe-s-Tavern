@@ -86,9 +86,9 @@ export interface ToolDefinition {
   handler: ToolHandler;
   /**
    * When true, the MCP dispatch layer does NOT wrap this tool in the global
-   * state mutex. Reserved for long-blocking tools (wait_for_task, chat_wait)
-   * that park for minutes — holding the mutex across them would freeze every
-   * other tool. All other tools are serialized to prevent lost updates from
+   * state mutex. Long waits (wait_for_task, chat_wait) and bounded read-only
+   * subprocess preflights (submit_plan) opt out so they cannot freeze the fleet.
+   * Mutating handlers that opt out must serialize and revalidate their writes. All other tools are serialized to prevent lost updates from
    * concurrent read-modify-write on the same entity.
    */
   blocking?: boolean;

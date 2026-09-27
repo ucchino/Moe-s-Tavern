@@ -7,7 +7,9 @@ import {
 } from './submitPlan.js';
 import { MoeError, MoeErrorCode } from '../util/errors.js';
 import { findMissingPaths } from '../util/affectedFiles.js';
+import * as cachedPlanPaths from '../util/cachedPlanPaths.js';
 import fs from 'fs';
+import { execFileSync } from 'node:child_process';
 import path from 'path';
 import os from 'os';
 import { StateManager } from '../state/StateManager.js';
@@ -718,6 +720,109 @@ describe('affected-path existence gate', () => {
     const stored = state.getTask('task-exists')!;
     expect(stored.implementationPlan[0].affectedFiles).toEqual(['src/a.ts', 'src/nested/b.ts']);
     expect(stored.implementationPlan[0].newFiles).toBeUndefined();
+  });
+
+  function cachedBranch(files: string[], branch = 'main'): string {
+    const git = (...args: string[]) => execFileSync('git', args, {
+      cwd: testDir, encoding: 'utf8',
+      env: { ...process.env, GIT_AUTHOR_NAME: 'Test', GIT_AUTHOR_EMAIL: 'test@example.test',
+        GIT_COMMITTER_NAME: 'Test', GIT_COMMITTER_EMAIL: 'test@example.test' },
+    }).trim();
+    git('init', '-q');
+    git('commit', '-q', '--allow-empty', '-m', 'stale root');
+    // Only this disposable fixture writes Git. The cached remote has a newer
+    // tree, while HEAD, worktree and default index keep the empty baseline.
+    const index = path.join(testDir, '.git', 'fixture-index');
+    const treeGit = (...args: string[]) => execFileSync('git', args, {
+      cwd: testDir, encoding: 'utf8', env: { ...process.env, GIT_INDEX_FILE: index },
+    }).trim();
+    treeGit('read-tree', '--empty');
+    const blob = execFileSync('git', ['hash-object', '-w', '--stdin'], {
+      cwd: testDir, encoding: 'utf8', input: 'delivered source\n',
+    }).trim();
+    for (const file of files) treeGit('update-index', '--add', '--cacheinfo', `100644,${blob},${file}`);
+    const tree = treeGit('write-tree');
+    const commit = git('commit-tree', tree, '-p', 'HEAD', '-m', 'delivered tree');
+    git('update-ref', `refs/remotes/origin/${branch}`, commit);
+    return commit;
+  }
+
+  it('accepts missing-worktree files from the pinned cached consolidation ref without Git writes', async () => {
+    const tool = await loadTool({ consolidationBranch: 'main' });
+    const files = ['reylink/scripts/local_dds_boundary.py', 'literal[1].ts', 'dir with space/x.ts'];
+    const commit = cachedBranch(files);
+    const head = fs.readFileSync(path.join(testDir, '.git', 'refs', 'heads',
+      execFileSync('git', ['branch', '--show-current'], { cwd: testDir, encoding: 'utf8' }).trim()));
+    const index = fs.readFileSync(path.join(testDir, '.git', 'index'));
+    const result = await tool.handler({ taskId: 'task-exists', steps: [
+      { description: 'Modify delivered files', affectedFiles: files },
+    ] }, state) as any;
+    expect(result.status).toBe('WORKING');
+    expect(result.pathValidation).toMatchObject({ ref: 'refs/remotes/origin/main', commit, paths: files });
+    expect(result.pathValidation.warning).toMatch(/cached.*not.*fresh/i);
+    expect(result.newFileCount).toBe(0);
+    expect(result.distinctFileCount).toBe(3);
+    expect(state.getTask('task-exists')!.implementationPlan[0].affectedFiles).toEqual(files);
+    expect(fs.existsSync(path.join(testDir, files[0]))).toBe(false);
+    expect(fs.readFileSync(path.join(testDir, '.git', 'index'))).toEqual(index);
+    expect(fs.readFileSync(path.join(testDir, '.git', 'refs', 'heads',
+      execFileSync('git', ['branch', '--show-current'], { cwd: testDir, encoding: 'utf8' }).trim()))).toEqual(head);
+    expect(fs.existsSync(path.join(testDir, '.git', 'FETCH_HEAD'))).toBe(false);
+  });
+
+  it('ignores inherited repository redirection in cached-ref reads', async () => {
+    const tool = await loadTool({ consolidationBranch: 'main' });
+    cachedBranch(['delivered.ts']);
+    vi.stubEnv('GIT_DIR', path.join(testDir, 'not-a-repository'));
+    vi.stubEnv('GIT_WORK_TREE', path.dirname(testDir));
+    try {
+      const result = await tool.handler({ taskId: 'task-exists', steps: [
+        { description: 'Change', affectedFiles: ['delivered.ts'] },
+      ] }, state) as { status: string };
+      expect(result.status).toBe('WORKING');
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it('releases the fleet mutex during Git lookup and rechecks status before submission', async () => {
+    const tool = await loadTool({ consolidationBranch: 'main' });
+    expect(tool.blocking).toBe(true);
+    let entered!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    let finish!: (value: cachedPlanPaths.CachedPlanPaths) => void;
+    const lookup = new Promise<cachedPlanPaths.CachedPlanPaths>(resolve => { finish = resolve; });
+    const spy = vi.spyOn(cachedPlanPaths, 'findCachedPlanPaths').mockImplementation(async () => {
+      entered(); return lookup;
+    });
+    try {
+      const submission = tool.handler({ taskId: 'task-exists', steps: [
+        { description: 'Change', affectedFiles: ['delivered.ts'] },
+      ] }, state);
+      const rejected = expect(submission).rejects.toMatchObject({ code: MoeErrorCode.INVALID_STATE });
+      await started;
+      // Would deadlock if fallback retained the dispatch or internal mutex.
+      await state.runExclusive(() => state.updateTask('task-exists', { status: 'BACKLOG' }));
+      finish({ ref: 'refs/remotes/origin/main', commit: 'a'.repeat(40), paths: ['delivered.ts'], warning: 'cached' });
+      await rejected;
+      expect(state.getTask('task-exists')!.implementationPlan).toEqual([]);
+      expect(state.getTask('task-exists')!.status).toBe('BACKLOG');
+    } finally { spy.mockRestore(); }
+  });
+
+  it.each(['typo.ts', 'literal*.ts', ':(glob)**'])('still rejects missing literal path %s in the cached ref', async (missing) => {
+    const tool = await loadTool({ consolidationBranch: 'main' });
+    cachedBranch(['literal1.ts']);
+    await expect(tool.handler({ taskId: 'task-exists', steps: [
+      { description: 'Change', affectedFiles: [missing] },
+    ] }, state)).rejects.toMatchObject({ code: MoeErrorCode.INVALID_INPUT, context: { missingPaths: [missing] } });
+    expect(state.getTask('task-exists')!.status).toBe('PLANNING');
+  });
+
+  it.each([undefined, '', 'moe/work-*', 'different'])('does not borrow arbitrary branch evidence for setting %s', async (branch) => {
+    const tool = await loadTool({ consolidationBranch: branch });
+    cachedBranch(['delivered.ts']);
+    await expect(tool.handler({ taskId: 'task-exists', steps: [
+      { description: 'Change', affectedFiles: ['delivered.ts'] },
+    ] }, state)).rejects.toMatchObject({ code: MoeErrorCode.INVALID_INPUT });
   });
 
   it('rejects a plan citing a missing path with no newFiles declaration', async () => {

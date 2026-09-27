@@ -165,13 +165,20 @@ git repository, when the command is non-blank, `autoCommit` is on,
 `MOE_DISABLE_QUALITY_GATE` is not `1`. Two invariants hold the path together:
 
 - **The daemon is state-only.** It never writes git state, lands, pushes or
-  runs a gate. Its one git call is a read-only
+  runs a gate. Its Git calls are read-only:
   `git --no-optional-locks status --porcelain=v2 --branch` that fingerprints the
   working tree for handoff notes (`util/diskState.ts`, from `claim_next_task`
-  and `release_task`). Every sha, exit code and landing it stores is what a
-  runner *reported*, and each store checks shape and binding, never the
+  and `release_task`), plus `submit_plan` existence checks against a pinned
+  cached `refs/remotes/origin/<consolidationBranch>` (`util/cachedPlanPaths.ts`).
+  The latter runs outside the state mutex, never fetches or changes the tree,
+  rejects partial clones/redirected roots, and reports stale-worktree provenance
+  without claiming remote freshness. Only an explicit literal branch is used;
+  missing Git/ref/object evidence retains the missing-path refusal. Cached
+  paths use the exact committed spelling (Git tree lookup is case-sensitive).
+  Full plan validation is repeated under the mutex before writing. Every delivery sha,
+  exit code and landing it stores is what a runner *reported*, and each store checks shape and binding, never the
   repository.
-- **The wrapper is the only git and process actor.** `scripts/moe-agent.{ps1,sh}`
+- **The wrapper is the Git-write and landing-process actor.** `scripts/moe-agent.{ps1,sh}`
   freezes the bytes, runs `settings.qualityGate`, moves the branch ref and
   reports each step through a `moe.*` tool.
 

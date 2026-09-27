@@ -7,12 +7,13 @@ import { StateManager } from '../state/StateManager.js';
 import { getTools } from '../tools/index.js';
 
 /**
- * Doc-contract guard for the daemon's one git call.
+ * Doc-contract guard for the daemon's read-only Git calls.
  *
- * The docs used to say the daemon "never runs git". It runs exactly one git
- * command: `util/diskState.ts` fingerprints the working tree with a read-only
+ * The docs used to say the daemon "never runs git". Its status read in
+ * `util/diskState.ts` fingerprints the working tree with a read-only
  * `git --no-optional-locks status --porcelain=v2 --branch` for handoff notes,
- * called from claim_next_task and release_task. What holds is narrower: the
+ * called from claim_next_task and release_task; cachedPlanPaths.ts also reads
+ * pinned cached refs for affected-path validation. What holds is narrower: the
  * daemon never writes git state, lands, pushes or runs the gate, and it never
  * checks a runner's report against git (docs/ARCHITECTURE.md "Delivery Path").
  *
@@ -41,8 +42,8 @@ const GIT_STATUS_ARGS_SOURCE = "['--no-optional-locks', 'status', '--porcelain=v
 const SRC = 'packages/moe-daemon/src';
 
 const WHAT_HOLDS =
-  'It runs one read-only `git status` (util/diskState.ts) for handoff ' +
-  'fingerprints. Say what holds instead: it never writes git state, lands, ' +
+  'It reads `git status` (util/diskState.ts) for handoff ' +
+  'fingerprints and cached refs for affected-path validation. Say what holds instead: it never writes git state, lands, ' +
   'pushes or runs the gate, and never checks a report against git.';
 
 /** CLAUDE.md plus every Markdown file under docs/, as repo-relative forward-slash paths. */
@@ -133,8 +134,10 @@ describe('daemon git documentation contract', () => {
     expect(hits, `These daemon source lines say the daemon never runs git. ${WHAT_HOLDS}`).toEqual([]);
   });
 
-  it('the architecture doc names the one read-only git call, exactly as util/diskState.ts runs it', () => {
+  it('the architecture doc names the read-only status call and cached-path fallback', () => {
     expect(read('docs/ARCHITECTURE.md')).toContain(GIT_STATUS_COMMAND);
+    expect(read('docs/ARCHITECTURE.md')).toContain('util/cachedPlanPaths.ts');
+    expect(read('docs/ARCHITECTURE.md')).toContain('without claiming remote freshness');
     expect(read('packages/moe-daemon/src/util/diskState.ts')).toContain(GIT_STATUS_ARGS_SOURCE);
   });
 });

@@ -8,6 +8,14 @@ import { collectAssertedPaths } from '../util/attributionTiers.js';
 import { unmetDependsOn } from '../state/dependencyUnblock.js';
 import { listCandidatesForTask } from '../state/candidateStore.js';
 import { contextStatus } from '../util/contextStatus.js';
+import { resolveWorkerRole } from '../util/workerRole.js';
+
+/**
+ * Sections dropped from a QA caller's default payload: no QA doc or skill reads
+ * them (QA reviews the delivered bytes against DoD and plan), and together they
+ * are ~20% of an average payload. view:"full" returns them for any role.
+ */
+const QA_OMITTED = ['task.epicSiblings', 'planningNotes'];
 
 /** Newest commits surfaced per task (the ledger itself is capped at MAX_COMMITS_PER_TASK). */
 const MAX_CONTEXT_COMMITS = 20;
@@ -59,7 +67,7 @@ import {
 export function getContextTool(_state: StateManager): ToolDefinition {
   return {
     name: 'moe.get_context',
-    description: 'Read the working context for one task: project settings and global/epic/task rails, the epic, the task (plan and steps, definitionOfDone, recent comments, verification, commits), its assigned worker, recent chat, planningNotes and a nextAction hint. Read-only. Fetch it after claiming and before planning, implementing or reviewing; view:"status" is a lighter delivery poll that does not count as having read the context.',
+    description: 'Read the working context for one task: project settings and global/epic/task rails, the epic, the task (plan and steps, definitionOfDone, recent comments, verification, commits), its assigned worker, recent chat, planningNotes and a nextAction hint. Read-only. Fetch it after claiming and before planning, implementing or reviewing. Trimmed per role by default (a QA caller does not get task.epicSiblings or planningNotes; the response lists what was left out in `omitted`); pass view:"full" for everything, from any role. view:"status" is a lighter delivery poll that does not count as having read the context.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -67,7 +75,7 @@ export function getContextTool(_state: StateManager): ToolDefinition {
         workerId: { type: 'string', description: 'Caller worker ID (auto-injected by proxy)' },
         view: {
           type: 'string', enum: ['full', 'status'],
-          description: 'Default full. Status is a read-only delivery poll, excludes instructions and never satisfies the full-context prerequisite. Fetch full before reviewing or acting.'
+          description: 'Omit for the role-trimmed default (counts as having read the context). "full" returns the complete, untrimmed payload for any role. "status" is a read-only delivery poll, excludes instructions and never satisfies the full-context prerequisite.'
         },
         commentsLimit: {
           type: 'number',
@@ -298,6 +306,9 @@ export function getContextTool(_state: StateManager): ToolDefinition {
       // the field vanish exactly when a reviewer re-reads a reopened task.
       const taskCandidates = task ? listCandidatesForTask(state, task.id) : [];
       const currentCandidate = taskCandidates.length > 0 ? taskCandidates[taskCandidates.length - 1] : undefined;
+      // Role trim applies only to the default view; view:"full" is never gated by role.
+      const trimForQa = params.view !== 'full' && Boolean(task) && Boolean(callerWorkerId)
+        && resolveWorkerRole(state, callerWorkerId) === 'qa';
 
       return {
         project: {
@@ -386,7 +397,7 @@ export function getContextTool(_state: StateManager): ToolDefinition {
                     rescueRefsHint: `Earlier sessions of this task left rescue checkpoints: ${rescueRefs.join(', ')}. Recover with \`git show <ref> --stat\` / \`git checkout <ref> -- <path>\` before redoing work.`
                   }
                 : {}),
-              epicSiblings,
+              ...(trimForQa ? {} : { epicSiblings }),
               ...(task.rejectionHistory && task.rejectionHistory.length > 0
                 ? { rejectionHistory: task.rejectionHistory.slice(0, 5) }
                 : {}),
@@ -441,8 +452,11 @@ export function getContextTool(_state: StateManager): ToolDefinition {
               }
             }
           : {}),
-        planningNotes,
+        ...(trimForQa ? {} : { planningNotes }),
         ...(nextAction ? { nextAction } : {}),
+        ...(trimForQa
+          ? { omitted: QA_OMITTED, omittedHint: 'Trimmed for the qa role. Call moe.get_context with view:"full" to include these sections.' }
+          : {}),
       };
     }
   };

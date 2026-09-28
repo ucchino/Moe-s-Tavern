@@ -46,13 +46,13 @@ const WHAT_HOLDS =
   'fingerprints and cached refs for affected-path validation. Say what holds instead: it never writes git state, lands, ' +
   'pushes or runs the gate, and never checks a report against git.';
 
-/** CLAUDE.md plus every Markdown file under docs/, as repo-relative forward-slash paths. */
+/** Every CLAUDE.md plus every Markdown file under docs/, as repo-relative forward-slash paths. */
 function docFiles(): string[] {
   const docs = fs
     .readdirSync(path.join(repoRoot, 'docs'), { recursive: true, encoding: 'utf8' })
     .filter((file) => file.endsWith('.md'))
     .map((file) => `docs/${file.split(path.sep).join('/')}`);
-  return ['CLAUDE.md', ...docs];
+  return ['CLAUDE.md', 'scripts/CLAUDE.md', 'packages/moe-daemon/CLAUDE.md', ...docs];
 }
 
 /** Every non-test .ts file under the daemon's src/, as src-relative forward-slash paths. */
@@ -83,6 +83,8 @@ describe('daemon git documentation contract', () => {
     expect(files).toEqual(
       expect.arrayContaining([
         'CLAUDE.md',
+        'scripts/CLAUDE.md',
+        'packages/moe-daemon/CLAUDE.md',
         'docs/ARCHITECTURE.md',
         'docs/CONFIGURATION.md',
         'docs/DEVELOPMENT.md',

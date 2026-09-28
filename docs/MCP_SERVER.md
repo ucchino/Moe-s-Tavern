@@ -186,11 +186,13 @@ Get current project/epic/task context and rails.
 {
   taskId?: string,
   workerId?: string,
-  view?: "full" | "status",                // default: full; status is only for progress/commit polling
+  view?: "full" | "status",                // omit = role-trimmed default; "full" = everything, any role; status is only for progress/commit polling
   commentsLimit?: number,                  // default: 3 recent comments, max 50; 0 omits comments
   commentsMaxChars?: number                // default: 1000 per comment; 0 returns full comment text
 }
 ```
+
+**Role trim.** Without `view`, the payload is trimmed by the caller's role (resolved from `workerId`: team role, else id prefix). A `qa` caller does not get `task.epicSiblings` or `planningNotes` — no QA doc reads them, and together they are ~20% of an average payload. The trimmed response carries `omitted: ["task.epicSiblings", "planningNotes"]` and an `omittedHint`. Every other role, and any caller whose role cannot be resolved, gets the full payload. `view: "full"` returns the complete, untrimmed payload for any role. Both the trimmed default and `"full"` count as having read the context.
 
 **Resolution order:**
 1. `taskId` param

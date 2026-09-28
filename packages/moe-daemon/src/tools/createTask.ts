@@ -29,15 +29,15 @@ export function createTaskTool(_state: StateManager): ToolDefinition {
     inputSchema: {
       type: 'object',
       properties: {
-        epicId: { type: 'string' },
-        title: { type: 'string' },
-        description: { type: 'string' },
-        definitionOfDone: { type: 'array', items: { type: 'string' } },
-        taskRails: { type: 'array', items: { type: 'string' } },
+        epicId: { type: 'string', description: 'The epic the task belongs to' },
+        title: { type: 'string', description: 'Task title' },
+        description: { type: 'string', description: 'What the task must achieve' },
+        definitionOfDone: { type: 'array', items: { type: 'string' }, description: 'Checkable acceptance criteria QA reviews against' },
+        taskRails: { type: 'array', items: { type: 'string' }, description: 'Constraints specific to this task' },
         status: { type: 'string', enum: ['BACKLOG', 'PLANNING', 'AWAITING_APPROVAL', 'WORKING', 'REVIEW', 'DONE'] },
         priority: { type: 'string', enum: ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'] },
-        parentTaskId: { type: 'string' },
-        order: { type: 'number' },
+        parentTaskId: { type: 'string', description: 'Optional parent task id' },
+        order: { type: 'number', description: 'Sort position within its column' },
         createdBy: { type: 'string', enum: ['HUMAN', 'WORKER', 'ARCHITECT', 'QA', 'GOVERNOR'], description: 'Overridden by the workerId team-role resolution when a workerId is supplied.' },
         workerId: { type: 'string', description: 'Caller worker ID (auto-injected by proxy) — resolves your team role into createdBy for attribution.' },
         dependsOn: {

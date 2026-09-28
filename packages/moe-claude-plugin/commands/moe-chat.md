@@ -31,5 +31,5 @@ Read the most recent chat activity from the `#general` channel.
 
 ## Notes
 
-- Read-only. Do NOT call `moe.chat_send` from this command — the user can use `/moe-send` or invoke the MCP tool directly.
+- Read-only. Do not call `moe.chat_send` from this command — the user can call that MCP tool directly.
 - Defaults to `#general`; pass a different channel via `$ARGUMENTS` if provided (and the channel exists).

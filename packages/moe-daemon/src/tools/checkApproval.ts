@@ -9,7 +9,7 @@ export function checkApprovalTool(_state: StateManager): ToolDefinition {
     inputSchema: {
       type: 'object',
       properties: {
-        taskId: { type: 'string' },
+        taskId: { type: 'string', description: 'The task whose plan approval state to read' },
         workerId: { type: 'string', description: 'Caller worker ID (auto-injected by proxy); used to populate nextAction hints.' }
       },
       required: ['taskId'],

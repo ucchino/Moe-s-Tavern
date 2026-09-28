@@ -19,14 +19,14 @@ Concentrate the gate; do not smear it. One verification step and one adversarial
 
 ## Conversational planning
 
-You run in an interactive TUI by default. The human is at the keyboard — use them. For any task that is non-trivial (2+ subsystems, ambiguous DoD, unfamiliar APIs, or a previous rejection), `Skill(skill="superpowers:brainstorming")` on PLANNING claim and let it guide a short clarifying exchange before you draft steps. Ask the user — in the REPL, not via `moe.chat_send` — about anything that would otherwise force you to guess: missing acceptance criteria, conflicting rails, framework/library choices, naming, scope boundaries. One or two well-chosen questions beat a plan that has to be reopened.
+You run in an interactive TUI by default. The human is at the keyboard — use them. For any task that is non-trivial (2+ subsystems, ambiguous DoD, unfamiliar APIs, or a previous rejection), open with a short clarifying exchange before you draft steps. Ask the user — in the REPL, not via `moe.chat_send` — about anything that would otherwise force you to guess: missing acceptance criteria, conflicting rails, framework/library choices, naming, scope boundaries. One or two well-chosen questions beat a plan that has to be reopened.
 
 Do not interrogate the user on trivial tasks (single file, obvious change, DoD already says exactly what to do). And do not turn this into a back-and-forth design session — the goal is to remove the specific ambiguities blocking a clean plan, then submit it.
 
 Only wait for the user to confirm the approach in `CONTROL` mode, and only while they are actually answering. Under `SPEED`/`TURBO` the human has already delegated plan approval — submit without waiting. Never `moe.report_blocked` on REPL silence alone: it makes a dependency-less BLOCKED row only a governor can clear. Block only on an ambiguity you cannot resolve from the task, the rails and the code.
 
 ## Runtime-driven workflow
-Follow `nextAction` on every Moe tool response. If it includes `recommendedSkill`, load that skill before calling the hinted tool. Ownership, ordering, context fetches, and approval flow are enforced by the runtime; do not duplicate the old procedural checklist here. On `MoeError`, read `error.data.nextAction` and do what it says. If requirements are ambiguous or rails conflict, use `moe.report_blocked` instead of submitting a speculative plan — but an unanswered REPL is not an ambiguity.
+Follow `nextAction` on every Moe tool response. If it includes `recommendedSkill`, load that skill before calling the hinted tool. Ownership, ordering, context fetches, and approval flow are enforced by the runtime. On `MoeError`, read `error.data.nextAction` and do what it says. If requirements are ambiguous or rails conflict, use `moe.report_blocked` instead of submitting a speculative plan — but an unanswered REPL is not an ambiguity.
 
 ## Idle behavior
 

@@ -321,7 +321,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --grok-exec              Use grok headless mode (non-interactive, --prompt-file --yolo)"
             echo "  --interactive            Force Claude into interactive TUI (default: on for architect/governor)"
             echo "  --no-interactive         Force one-shot --print mode (default for worker/qa; fresh CLI per task)"
-            echo "  --model MODEL            Claude model override (default: all roles = opus-5)"
+            echo "  --model MODEL            Claude model override (default: worker/qa = claude-opus-5-5, architect/governor = claude-opus-5)"
             echo "  --help, -h               Show this help"
             echo ""
             echo "Examples:"
@@ -6527,9 +6527,9 @@ Your FIRST action is to read the backlog, then enter the moe.chat_wait loop with
     elif [ "$PREFLIGHT_NO_TASK" = true ]; then
         DYNAMIC_CONTEXT="# Pre-flight Complete: no claimable task
 The daemon reports no claimable task for role $ROLE right now.
-Your FIRST action MUST be moe.wait_for_task with statuses=$STATUSES, workerId=$WORKER_ID.
+Start with moe.wait_for_task with statuses=$STATUSES, workerId=$WORKER_ID.
 When it returns hasNext:true, call moe.claim_next_task, then moe.get_context.
-If moe.wait_for_task returns hasChatMessage:true, your NEXT calls MUST be moe.chat_read on chatMessage.channel, then moe.chat_send with your reply, THEN moe.wait_for_task again. Do not claim a new task while a routed mention is unanswered.
+If moe.wait_for_task returns hasChatMessage:true, call moe.chat_read on chatMessage.channel and reply with moe.chat_send before calling moe.wait_for_task again. Do not claim a new task while a routed mention is unanswered.
 If hasPendingQuestion:true, call moe.get_pending_questions and answer with moe.add_comment."
     fi
     DYNAMIC_CONTEXT="$SESSION_SETTINGS
@@ -6596,8 +6596,6 @@ $PREFLIGHT_ROUTED_MENTIONS_JSON
             PROMPT_BODY="You are in governance mode. Read the backlog: moe.chat_channels, find #governors, moe.chat_read it (last 50 messages), then moe.chat_read #general. After catching up, enter the loop: moe.chat_wait with channels=['#governors','#general'] and a long timeout. When it wakes, triage per docs/roles/governor.md (the role doc is appended to your system prompt). Reply via moe.chat_send. Use moe.set_task_status, moe.release_task, moe.propose_rail, or moe.submit_plan_critique when the signal calls for action. On stale-worker alerts: quiet is not dead (long builds/tests are silent) — ping the worker first and NEVER call moe.release_task on idle time alone; release needs a confirmed crash plus the human's nod. Loop forever. Do NOT call moe.claim_next_task."
         elif [ -n "$NOTIFICATION_PROMPT" ]; then
             PROMPT_BODY="$NOTIFICATION_PROMPT"
-        elif [ "$PREFLIGHT_NO_TASK" = true ]; then
-            PROMPT_BODY="No claimable task right now. Call moe.wait_for_task with statuses=$STATUSES, workerId=\"$WORKER_ID\". When it wakes with hasNext:true, call moe.claim_next_task with the same args, then moe.get_context. If it wakes with hasChatMessage:true, your next calls MUST be moe.chat_read on chatMessage.channel, then moe.chat_send with your reply, THEN moe.wait_for_task again. If it wakes with hasPendingQuestion:true, call moe.chat_read on that task's channel and answer the question. Do not claim a new task while a routed mention is unanswered."
         else
             # Pre-flight was skipped or failed -- fall back to the legacy multi-step prompt
             PROMPT_BODY="First call moe.chat_channels to find #general, then moe.chat_join and moe.chat_send to announce yourself as $ROLE. Then call moe.chat_read to catch up on any unread messages from other agents or human. Then call moe.get_pending_questions to check for unanswered questions. Answer any you find using moe.add_comment. Then use the MCP tool moe.claim_next_task with args $CLAIM_JSON. Do NOT read .moe/ files directly - only use moe.* MCP tools. If hasNext is false, call moe.wait_for_task with the same statuses and workerId. When it returns hasNext:true, call moe.claim_next_task again. If it returns hasChatMessage:true, call moe.chat_read to read and respond, then call moe.wait_for_task again. If it returns hasPendingQuestion:true, call moe.get_pending_questions, answer them with moe.add_comment, then call moe.wait_for_task again. If it returns timedOut:true, call moe.wait_for_task again. After claiming a task and calling moe.get_context, use Serena list_memories / read_memory to pick up prior knowledge for this task/area. Before calling moe.wait_for_task, use Serena write_memory to record a 'task-<id>-handoff' note (and any gotcha-<area> learnings) so the next agent benefits. Keep waiting until you get a task."
@@ -6616,7 +6614,7 @@ $PREFLIGHT_ROUTED_MENTIONS_JSON
     # stop task (and governors default to interactive anyway). Headless grok
     # (--prompt-file --yolo) is the same one-shot shape and gets it too.
     if { { [ "$CLI_TYPE" = "claude" ] && [ "$CLAUDE_INTERACTIVE" = false ]; } || { [ "$CLI_TYPE" = grok ] && [ "$GROK_INTERACTIVE" = false ]; }; } && [ "$ROLE" != "governor" ] && [ -n "$PROMPT_BODY" ] && [ -z "$NOTIFICATION_PROMPT" ]; then
-        PROMPT_BODY="$PROMPT_BODY CRITICAL (one-shot session): this CLI process exits the moment you end your turn, and any background jobs/builds/tests die with it — a completion notification can NEVER arrive after you stop. Run verification in the foreground or poll it to completion. Do NOT call moe.wait_for_task at the end of the task: end your turn once your terminal moe.* call for this task (submit_plan / complete_task / qa_approve / qa_reject / report_blocked) has succeeded — the wrapper respawns a fresh session for the next task."
+        PROMPT_BODY="$PROMPT_BODY One-shot session: this CLI process exits when you end your turn, and any background jobs/builds/tests die with it, so a completion notification cannot arrive after you stop. Run verification in the foreground or poll it to completion. Do not call moe.wait_for_task at the end of the task: end your turn once your terminal moe.* call for this task (submit_plan / complete_task / qa_approve / qa_reject / report_blocked) has succeeded — the wrapper respawns a fresh session for the next task."
     elif { [ "$CLI_TYPE" = claude ] || [ "$CLI_TYPE" = grok ]; } && [ "$AUTO_CLAIM" = true ] && [ "$PREFLIGHT_OK" = true ] && [ "$ROLE" != "governor" ] && [ -n "$PROMPT_BODY" ] && [ -z "$NOTIFICATION_PROMPT" ]; then
         # An interactive TUI stays open after the agent stops, and the wrapper
         # claims the next task only once the CLI exits: without this line the

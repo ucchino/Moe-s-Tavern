@@ -59,12 +59,12 @@ import {
 export function getContextTool(_state: StateManager): ToolDefinition {
   return {
     name: 'moe.get_context',
-    description: 'Get current project/epic/task context and rails',
+    description: 'Read the working context for one task: project settings and global/epic/task rails, the epic, the task (plan and steps, definitionOfDone, recent comments, verification, commits), its assigned worker, recent chat, planningNotes and a nextAction hint. Read-only. Fetch it after claiming and before planning, implementing or reviewing; view:"status" is a lighter delivery poll that does not count as having read the context.',
     inputSchema: {
       type: 'object',
       properties: {
-        taskId: { type: 'string' },
-        workerId: { type: 'string' },
+        taskId: { type: 'string', description: 'The task to read' },
+        workerId: { type: 'string', description: 'Caller worker ID (auto-injected by proxy)' },
         view: {
           type: 'string', enum: ['full', 'status'],
           description: 'Default full. Status is a read-only delivery poll, excludes instructions and never satisfies the full-context prerequisite. Fetch full before reviewing or acting.'

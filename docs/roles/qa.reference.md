@@ -56,7 +56,7 @@ Read current project/epic/task rails before running commands. All test and re-ru
 1. **A genuine crash.** The previous session died (window close, SIGKILL, a box reboot) without landing. The next pre-flight of that task lands its baseline as `MOE_CHECKPOINT_RECOVERED`, and the work continues on top. That recovery path is deliberate — it exists because of the 2026-08-28 lost-code incident.
 2. **A cross-host skip.** The owner's live-session marker was written on a host or pid namespace this seat cannot probe (a WSL seat and a Windows seat sharing the checkout through a mount). The wrapper prints `MOE_CHECKPOINT_SKIPPED_LIVE_OWNER ... reason=foreign-host` and refuses to recover; the bytes land later, from a seat that can see that process.
 
-**What is NOT legitimate any more:** a `role=qa ... recovered` checkpoint carrying a worker's whole implementation while the worker's own completion holds only a board record. That was the live-owner race fixed on 2026-09-11; the wrapper now stands down with `MOE_CHECKPOINT_SKIPPED_LIVE_OWNER ... reason=live` instead. Seeing it again means the guard regressed — reject and say so.
+**Not legitimate:** a `role=qa ... recovered` checkpoint carrying a worker's whole implementation while the worker's own completion holds only a board record. The wrapper stands down with `MOE_CHECKPOINT_SKIPPED_LIVE_OWNER ... reason=live` in that case, so seeing it means the live-owner guard regressed — reject and say so.
 
 ## Quality memory
 
@@ -66,9 +66,7 @@ Cross-session memory lives in the Serena MCP server (`.serena/memories/`), not i
 Acknowledge ONCE. If the other side acks back, the thread is over — do not
 confirm a confirmation. A closure that needs restating was not a closure. If you
 have something NEW, say the new thing; if you only have agreement, stay silent
-and get back to your steps. Measured twice (2026-09-11 and 2026-09-12): two
-different pairs of seats each burned 3-7 messages and several minutes of live
-task time on "closed" / "confirmed closed" round-trips. The Loop Guard caps
+and get back to your steps. Ack round-trips burn live task time. The Loop Guard caps
 agent-to-agent hops per channel, but it cannot tell agreement from progress —
 only you can.
 

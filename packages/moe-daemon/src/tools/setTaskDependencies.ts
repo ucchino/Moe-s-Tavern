@@ -20,7 +20,7 @@ export function setTaskDependenciesTool(_state: StateManager): ToolDefinition {
     inputSchema: {
       type: 'object',
       properties: {
-        taskId: { type: 'string' },
+        taskId: { type: 'string', description: 'The task whose dependsOn list to replace' },
         dependsOn: { type: 'array', items: { type: 'string' }, description: 'Full replacement list of task ids (empty array clears all dependencies).' },
         workerId: { type: 'string', description: 'Caller worker ID (auto-injected by proxy); must be on an architect or governor team.' }
       },

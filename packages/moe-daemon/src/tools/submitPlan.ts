@@ -110,13 +110,14 @@ export function submitPlanTool(_state: StateManager): ToolDefinition {
     // Git fallback runs outside the fleet mutex; each validation/write attempt
     // below takes the mutex and revalidates current ownership/status/rails.
     blocking: true,
-    description: 'Submit an implementation plan for a task',
+    description: 'Architect: submit the implementation plan for a PLANNING task and free your seat. CONTROL mode moves the task to AWAITING_APPROVAL for a human, SPEED auto-approves after a short delay, TURBO moves it straight to WORKING (moe.check_approval reports the state). Each step is one ordered unit the worker runs with start_step/complete_step. affectedFiles must already exist under the project root (or the cached origin ref), relative to the project root; put files the step creates in newFiles. Size limits (settings.taskSizing): warns past 8 steps or 5 distinct files, rejects past 12 steps or 10 files — split the task instead.',
     inputSchema: {
       type: 'object',
       properties: {
-        taskId: { type: 'string' },
+        taskId: { type: 'string', description: 'The PLANNING task this plan is for' },
         steps: {
           type: 'array',
+          description: 'Ordered implementation steps; each has a description and the files it edits (affectedFiles) or creates (newFiles)',
           items: {
             type: 'object',
             properties: {

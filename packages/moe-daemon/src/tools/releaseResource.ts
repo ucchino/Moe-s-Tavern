@@ -16,8 +16,8 @@ export function releaseResourceTool(_state: StateManager): ToolDefinition {
     inputSchema: {
       type: 'object',
       properties: {
-        resourceId: { type: 'string' },
-        workerId: { type: 'string' },
+        resourceId: { type: 'string', description: 'The shared resource whose lease to release' },
+        workerId: { type: 'string', description: 'Caller worker ID (auto-injected by proxy)' },
         taskId: { type: 'string', description: 'Limit the release to this task\'s lease/queue entry. Default: everything held by workerId. NOTE: taskId scopes a TASK, not a lease generation — the same task\'s lease may since have passed to a different worker. Use ifHolderWorkerId to pin the generation.' },
         force: { type: 'boolean', description: 'Release regardless of ownership (governor/human intervention). With taskId: that lease; without: ALL leases and queue entries.' },
         ifHolderWorkerId: { type: 'string', description: 'Precondition: proceed only if EVERY lease this call would release is still held by this worker — including, under force with no taskId, peer leases the call would also strip. Otherwise nothing is released and the error names the current holder. Guards leases, not queue entries. Use it whenever time passed between reading list_resources and calling this — a human-in-the-loop pause is the common case.' },

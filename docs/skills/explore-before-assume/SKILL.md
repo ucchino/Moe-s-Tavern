@@ -15,7 +15,7 @@ For every function, class, method, model, attribute, relationship, constant, env
 
 ## Why this matters
 
-Without this discipline, you will confidently call `user.clientProfile.accounts` — a relationship chain that doesn't exist. The code will look right. It will read right. It will fail at runtime, often subtly. Every team that adopts a "verify before you reference" rule eliminates an entire class of bugs immediately.
+A plausible reference that doesn't exist (`user.clientProfile.accounts`) reads right, passes review by eye, and fails at runtime — often subtly. Checking first removes that whole class of bug.
 
 ## The minimum check
 

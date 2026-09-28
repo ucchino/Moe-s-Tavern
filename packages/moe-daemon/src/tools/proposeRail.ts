@@ -11,12 +11,12 @@ export function proposeRailTool(_state: StateManager): ToolDefinition {
     inputSchema: {
       type: 'object',
       properties: {
-        taskId: { type: 'string' },
-        proposalType: { type: 'string', enum: ['ADD_RAIL', 'MODIFY_RAIL', 'REMOVE_RAIL'] },
-        targetScope: { type: 'string', enum: ['GLOBAL', 'EPIC', 'TASK'] },
-        currentValue: { type: 'string' },
-        proposedValue: { type: 'string' },
-        reason: { type: 'string' }
+        taskId: { type: 'string', description: 'The task the proposal came up in' },
+        proposalType: { type: 'string', enum: ['ADD_RAIL', 'MODIFY_RAIL', 'REMOVE_RAIL'], description: 'Add a new rail, modify an existing one, or remove one' },
+        targetScope: { type: 'string', enum: ['GLOBAL', 'EPIC', 'TASK'], description: 'Which rail list the change applies to' },
+        currentValue: { type: 'string', description: 'The existing rail text (for MODIFY_RAIL / REMOVE_RAIL)' },
+        proposedValue: { type: 'string', description: 'The new rail text' },
+        reason: { type: 'string', description: 'Why the rail should change' }
       },
       required: ['taskId', 'proposalType', 'targetScope', 'proposedValue', 'reason'],
       additionalProperties: false

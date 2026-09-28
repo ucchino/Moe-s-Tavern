@@ -69,9 +69,9 @@ export function setTaskStatusTool(_state: StateManager): ToolDefinition {
     inputSchema: {
       type: 'object',
       properties: {
-        taskId: { type: 'string' },
-        status: { type: 'string', enum: VALID_STATUSES },
-        reason: { type: 'string' },
+        taskId: { type: 'string', description: 'The task to move' },
+        status: { type: 'string', enum: VALID_STATUSES, description: 'Target status; the transition must be legal from the current one' },
+        reason: { type: 'string', description: 'Why the status changes; recorded as reopenReason, and also as blockedReason when status is BLOCKED' },
         // Declared so the caller's identity is a first-class input rather than
         // an undeclared extra the proxy injects: it is recorded as the actor on
         // the resulting audit event.

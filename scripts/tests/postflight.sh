@@ -1435,7 +1435,7 @@ if ! grep -Fqx -- '--print' "$CLI_ARGS_FILE"; then
   echo "Expected worker/qa CLI to be launched with --print by default" >&2
   exit 1
 fi
-if ! grep -Fq 'CRITICAL (one-shot session)' "$CLI_ARGS_FILE"; then
+if ! grep -Fq 'One-shot session:' "$CLI_ARGS_FILE"; then
   cat "$CLI_ARGS_FILE" >&2 || true
   echo "Expected one-shot session warning in the CLI prompt" >&2
   exit 1
@@ -3504,7 +3504,7 @@ EOF
     scope_fail Y "grok must not receive the wrapper's claude model fallback" "$TMP_DIR/scope-y.out"
   fi
   [ -f "$GROK_PROMPT_COPY" ] || scope_fail Y "the --prompt-file path handed to grok did not exist" "$TMP_DIR/scope-y.out"
-  for needle in 'Role: worker' '# Session Context (per-iteration)' 'Claimed task id: task-postflight' 'CRITICAL (one-shot session)'; do
+  for needle in 'Role: worker' '# Session Context (per-iteration)' 'Claimed task id: task-postflight' 'One-shot session:'; do
     if ! grep -Fq -- "$needle" "$GROK_PROMPT_COPY"; then
       scope_fail Y "expected [$needle] in the grok prompt file" "$TMP_DIR/scope-y.out"
     fi

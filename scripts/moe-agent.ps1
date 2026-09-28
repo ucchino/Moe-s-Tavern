@@ -5653,9 +5653,9 @@ Your FIRST action is to read the backlog, then enter the moe.chat_wait loop with
         $dynamicContext += @"
 # Pre-flight Complete: no claimable task
 The daemon reports no claimable task for role $Role right now.
-Your FIRST action MUST be moe.wait_for_task with statuses=$(ConvertTo-Json @($statuses) -Compress), workerId=$WorkerId.
+Start with moe.wait_for_task with statuses=$(ConvertTo-Json @($statuses) -Compress), workerId=$WorkerId.
 When it returns hasNext:true, call moe.claim_next_task, then moe.get_context.
-If moe.wait_for_task returns hasChatMessage:true, your NEXT calls MUST be moe.chat_read on chatMessage.channel, then moe.chat_send with your reply, THEN moe.wait_for_task again. Do not claim a new task while a routed mention is unanswered.
+If moe.wait_for_task returns hasChatMessage:true, call moe.chat_read on chatMessage.channel and reply with moe.chat_send before calling moe.wait_for_task again. Do not claim a new task while a routed mention is unanswered.
 "@
     }
 
@@ -5834,7 +5834,7 @@ $mentionsJson
     # too), matching the sh twin's GROK_INTERACTIVE gate.
     $oneShotSession = if ($cliType -eq 'grok') { -not $grokInteractive } else { -not $Interactive }
     if ($claimPromptBody -and $oneShotSession -and $Role -ne 'governor' -and -not $notificationPrompt) {
-        $claimPromptBody += " CRITICAL (one-shot session): this CLI process exits the moment you end your turn, and any background jobs/builds/tests die with it — a completion notification can NEVER arrive after you stop. Never end your turn to 'wait for' a background task: run it in the foreground or poll it to completion first. End your turn only after your terminal moe.* call for this task (submit_plan / complete_task / qa_approve / qa_reject / report_blocked) has succeeded."
+        $claimPromptBody += " One-shot session: this CLI process exits when you end your turn, and any background jobs/builds/tests die with it, so a completion notification cannot arrive after you stop. Never end your turn to 'wait for' a background task: run it in the foreground or poll it to completion first. End your turn only after your terminal moe.* call for this task (submit_plan / complete_task / qa_approve / qa_reject / report_blocked) has succeeded."
     } elseif ($cliType -in @('claude', 'grok') -and $AutoClaim -and $preflightOk -and $claimPromptBody -and $Role -ne 'governor' -and -not $notificationPrompt) {
         # An interactive TUI stays open after the agent stops, and the wrapper
         # claims the next task only once the CLI exits: without this line the

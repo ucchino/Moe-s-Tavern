@@ -96,7 +96,7 @@ for (const [engine, executable] of engines) {
         assert.match(prompt, /Do NOT call moe\.wait_for_task or moe\.claim_next_task/);
         assert.match(prompt, /end your turn/i);
         assert.match(prompt, /baseline/i);
-        assert.doesNotMatch(prompt, /When it (?:returns|wakes).*hasNext:true|FIRST action MUST be moe\.wait_for_task/);
+        assert.doesNotMatch(prompt, /When it (?:returns|wakes).*hasNext:true|Start with moe\.wait_for_task/);
       }
       assert.doesNotMatch(rendered.combined, /End your turn only after your terminal moe/,
         'a taskless notification must not require a task terminal call before exit');
@@ -123,7 +123,7 @@ for (const [engine, executable] of engines) {
           `${part} must forbid claiming: this session has no baseline`);
         assert.match(prompt, /edit project files/, `${part} must forbid editing without a baseline`);
       }
-      assert.doesNotMatch(rendered.combined, /FIRST action MUST be moe\.wait_for_task/);
+      assert.doesNotMatch(rendered.combined, /Start with moe\.wait_for_task/);
       assert.doesNotMatch(rendered.combined, /When it (?:returns|wakes) (?:with )?hasNext:true/);
     });
   }
@@ -134,7 +134,7 @@ for (const [engine, executable] of engines) {
     // AutoClaim=false is the operator opting OUT of wrapper claiming, baseline
     // and landing altogether, so the in-CLI claim chain is still correct there
     // -- and it renders no PROMPT_BODY at all, only the dynamic context.
-    ['manual launch', { auto: false }, /FIRST action MUST be moe\.wait_for_task/],
+    ['manual launch', { auto: false }, /Start with moe\.wait_for_task/],
   ]) {
     test(`${engine}: preserves ${name} prompt contract`, () => {
       const rendered = render(engine, executable, options);

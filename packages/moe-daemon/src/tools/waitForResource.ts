@@ -45,8 +45,8 @@ export function waitForResourceTool(_state: StateManager): ToolDefinition {
     inputSchema: {
       type: 'object',
       properties: {
-        resourceId: { type: 'string' },
-        taskId: { type: 'string' },
+        resourceId: { type: 'string', description: 'The shared resource to wait for' },
+        taskId: { type: 'string', description: 'The task the lease is for (leases are task-keyed)' },
         workerId: { type: 'string', description: 'Your worker ID (used for cleanup on disconnect)' },
         timeoutMs: { type: 'number', description: 'Max wait time in ms (default 300000, max 600000)' }
       },

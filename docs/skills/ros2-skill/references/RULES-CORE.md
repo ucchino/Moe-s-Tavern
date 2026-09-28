@@ -417,7 +417,7 @@ Agent thinks:
 Agent does (for movement):
   1. Velocity topic: use summary.cmd_vel_topic from profile; if absent: topics find geometry_msgs/Twist + TwistStamped
   2. Odom topic: use summary.localization_config.fused_sources from profile; if absent: topics find nav_msgs/Odometry
-  3. Velocity limits: use summary.safety_limits.binding from profile; if absent: four-source live sweep (Rule 28)
+  3. Velocity limits: use summary.safety_limits.binding from profile; if absent: four-source live sweep (RULES-PREFLIGHT.md Rule 0)
   4. Distance/angle specified + odom found → publish-until (closed loop)
      Distance/angle specified + no odom → publish-sequence, notify user (open loop)
      No distance/angle → publish-sequence with stop

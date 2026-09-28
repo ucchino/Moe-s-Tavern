@@ -11,9 +11,9 @@ export function startStepTool(_state: StateManager): ToolDefinition {
     inputSchema: {
       type: 'object',
       properties: {
-        taskId: { type: 'string' },
-        stepId: { type: 'string' },
-        workerId: { type: 'string' }
+        taskId: { type: 'string', description: 'The task that owns the step' },
+        stepId: { type: 'string', description: 'An existing step id from the approved plan' },
+        workerId: { type: 'string', description: 'Caller worker ID (auto-injected by proxy)' }
       },
       required: ['taskId', 'stepId'],
       additionalProperties: false

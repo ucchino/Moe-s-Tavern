@@ -11,12 +11,12 @@ export function createEpicTool(_state: StateManager): ToolDefinition {
     inputSchema: {
       type: 'object',
       properties: {
-        title: { type: 'string' },
-        description: { type: 'string' },
-        architectureNotes: { type: 'string' },
-        epicRails: { type: 'array', items: { type: 'string' } },
-        status: { type: 'string' },
-        order: { type: 'number' }
+        title: { type: 'string', description: 'Epic title' },
+        description: { type: 'string', description: 'What the epic delivers' },
+        architectureNotes: { type: 'string', description: 'Design notes shared with every task in the epic' },
+        epicRails: { type: 'array', items: { type: 'string' }, description: 'Constraints every task in the epic must follow' },
+        status: { type: 'string', description: 'PLANNED, ACTIVE, COMPLETED or ARCHIVED' },
+        order: { type: 'number', description: 'Sort position among epics' }
       },
       required: ['title'],
       additionalProperties: false

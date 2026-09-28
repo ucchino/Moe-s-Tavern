@@ -106,9 +106,7 @@ Prefer `edit_memory` to append to an existing topic file over creating a near-du
 Acknowledge ONCE. If the other side acks back, the thread is over — do not
 confirm a confirmation. A closure that needs restating was not a closure. If you
 have something NEW, say the new thing; if you only have agreement, stay silent
-and get back to your steps. Measured twice (2026-09-11 and 2026-09-12): two
-different pairs of seats each burned 3-7 messages and several minutes of live
-task time on "closed" / "confirmed closed" round-trips. The Loop Guard caps
+and get back to your steps. Ack round-trips burn live task time. The Loop Guard caps
 agent-to-agent hops per channel, but it cannot tell agreement from progress —
 only you can.
 

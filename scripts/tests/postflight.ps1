@@ -426,7 +426,9 @@ switch (tool) {
       ok({
         hasNext: false,
         alreadyAssigned: { taskId: 'task-resume', title: 'Resume smoke', status: process.env.FAKE_TASK_STATUS || 'REVIEW' },
-        nextAction: { tool: 'moe.get_context', args: { taskId: 'task-resume' }, reason: 'One task per worker: you already hold task-resume.' }
+        nextAction: { tool: 'moe.get_context', args: { taskId: 'task-resume' }, reason: 'One task per worker: you already hold task-resume.' },
+        // FAKE_CLAIM_LAUNCH: the per-task tier hint (claimNextTask.ts launch).
+        ...(process.env.FAKE_CLAIM_LAUNCH ? { launch: JSON.parse(process.env.FAKE_CLAIM_LAUNCH) } : {})
       });
     } else if (process.env.FAKE_CLAIM_MODE === 'blocked') {
       // BLOCKED hold: the daemon parked the held task via report_blocked; the
@@ -1474,6 +1476,25 @@ finally{if(!process.env.MOE_KEEP_FROZEN_FIXTURE)for(const d of [root,wrapperTmp]
         } finally {
             Remove-Item Env:FAKE_CLAIM_MODE -ErrorAction SilentlyContinue
         }
+
+        # --- Per-task tier: a claim carrying launch {tier, effort} launches the
+        # CLI with that effort and prints the tier banner (sh twin parity). ---
+        $tierArgsFile = Join-Path $tempRoot 'cli-args-tier.txt'
+        $tierCmd = Join-Path $tempRoot 'tier.cmd'
+        Set-Content -Path $tierCmd -Encoding ASCII -Value "@echo off`r`necho %* > `"$tierArgsFile`"`r`nexit /b 0`r`n"
+        $wrapperTierOut = Join-Path $tempRoot 'wrapper-tier.out'
+        $env:FAKE_CLAIM_MODE = 'resume'
+        $env:FAKE_CLAIM_LAUNCH = '{"tier":"light","effort":"medium"}'
+        try {
+            $tierCode = Invoke-WrapperProcess @('-Project', $projectDir, '-WorkerId', 'qa-postflight', '-Role', 'qa', '-Team', 'Smoke', '-NoStartDaemon', '-Command', $tierCmd, '-Loop', '-PollInterval', '0') $wrapperTierOut
+        } finally {
+            Remove-Item Env:FAKE_CLAIM_MODE -ErrorAction SilentlyContinue
+            Remove-Item Env:FAKE_CLAIM_LAUNCH -ErrorAction SilentlyContinue
+        }
+        if ($tierCode -ne 0) { Get-Content $wrapperTierOut -ErrorAction SilentlyContinue | ForEach-Object { Write-Error $_ }; throw "Tier wrapper exited with $tierCode" }
+        $tierArgs = if (Test-Path $tierArgsFile) { Get-Content -Raw -Path $tierArgsFile } else { '' }
+        if ($tierArgs -notlike '*--effort medium*') { Write-Host $tierArgs; throw 'Expected --effort medium from the claim''s launch tier' }
+        if ((Get-Content -Raw -Path $wrapperTierOut) -notlike '*Task tier: light (model*') { Get-Content $wrapperTierOut | ForEach-Object { Write-Error $_ }; throw 'Expected the task tier banner' }
 
         # --- Heartbeat sidecar: the CLI invocation blocks the wrapper with no
         # moe.* calls of its own for the CLI's whole runtime, so a long silent

@@ -14,9 +14,9 @@ import { atomicWriteText } from '../util/atomicWrite.js';
  */
 export const SKILL_FILES: Record<string, string> = {
   'adversarial-self-review/SKILL.md': `---
-# moe-generated: sha=bdf1e9749457
+# moe-generated: sha=441d0e63787c
 name: adversarial-self-review
-description: Use before calling moe.complete_step on the final step of a task, and again before moe.complete_task. Forces you to read your own diff as an attacker, not an author. Catches concurrency bugs, null-deref, embarrassing assumptions before QA does.
+description: Use once per task, before moe.complete_step on the final step (or moe.complete_task). Forces you to read your own diff as an attacker, not an author. Catches concurrency bugs, null-deref, embarrassing assumptions before QA does.
 when_to_use: Worker, on the final step of a task, before complete_step or complete_task.
 allowed-tools: Read, Grep, Bash(git diff:*), Bash(git log:*)
 ---
@@ -27,7 +27,7 @@ You wrote the code. Now read it like someone who wants to break it.
 
 ## The setup
 
-Run \`git diff\` (or \`git diff main...HEAD\` if you've committed). Print the diff. Read it top to bottom *not* as the author who knows what was intended, but as a hostile reviewer who assumes nothing.
+Run \`git diff -- <the paths this task touched>\` — the shared working tree also holds other sessions' edits, so never review a bare \`git diff\`. Read it top to bottom *not* as the author who knows what was intended, but as a hostile reviewer who assumes nothing.
 
 This runs **once per task**, at the end — not after each step. On a mid-epic task, the diff you review is your own task's. On the epic's **final** task, widen it to the whole epic's diff: that's the pass that has to catch what the individual slices couldn't see about each other.
 
@@ -79,7 +79,7 @@ Tests verify behavior you thought to write. Adversarial review catches behavior 
 
 Doc-only changes, single-line config tweaks, trivial typo fixes. For anything touching logic, IO, or state — run the full checklist. It takes three minutes and prevents the kind of bug that costs three days.`,
   'cpp/SKILL.md': `---
-# moe-generated: sha=014ad5bd2e4f
+# moe-generated: sha=654c4fe488de
 name: cpp
 description: Use when writing, reviewing, or debugging modern C++ (C++11 and beyond) — .cpp/.cc/.cxx/.h/.hpp files, CMake builds, smart pointers, RAII, move semantics, templates, STL, or concurrency.
 domain: programming-languages
@@ -127,6 +127,8 @@ metadata:
 ## Overview
 
 Modern C++ (C++11 and beyond) patterns including RAII, smart pointers, templates, and STL.
+
+A modern-CMake project template ships with this skill at \`templates/CMakeLists.txt\` (usage in \`templates/README.md\`); start new C++ projects from it.
 
 ---
 
@@ -718,9 +720,7 @@ void variant_usage() {
 
 ## Related Skills
 
-- [[system-design]] - Systems programming
-- [[performance-optimization]] - Low-level optimization
-- [[desktop-apps]] - Native applications`,
+- [[system-design]] - Systems programming`,
   'cpp/templates/CMakeLists.txt': `# ===========================================
 # CMake Project Template
 # Usage: Copy to project root
@@ -1090,7 +1090,7 @@ The template enables \`compile_commands.json\` export for IDE support:
 ln -s build/compile_commands.json .
 \`\`\``,
   'explore-before-assume/SKILL.md': `---
-# moe-generated: sha=bf1df322eab5
+# moe-generated: sha=9f64d49809db
 name: explore-before-assume
 description: Use before referencing any function, model, method, relationship, constant, or import in a plan or implementation. Verifies things actually exist in the codebase before building on top of them. Eliminates an entire class of hallucinated-API bugs.
 when_to_use: Architect during planning before naming symbols in implementationPlan; worker on first start_step before editing unfamiliar code.
@@ -1107,7 +1107,7 @@ For every function, class, method, model, attribute, relationship, constant, env
 
 ## Why this matters
 
-Without this discipline, you will confidently call \`user.clientProfile.accounts\` — a relationship chain that doesn't exist. The code will look right. It will read right. It will fail at runtime, often subtly. Every team that adopts a "verify before you reference" rule eliminates an entire class of bugs immediately.
+A plausible reference that doesn't exist (\`user.clientProfile.accounts\`) reads right, passes review by eye, and fails at runtime — often subtly. Checking first removes that whole class of bug.
 
 ## The minimum check
 
@@ -1262,7 +1262,7 @@ If the epic touched shared types, schema, wire protocol, or migrations, say so i
 
 Create the tasks, then stop. Each one gets planned separately — when it reaches \`PLANNING\` and you claim it, that's when \`moe-planning\` runs, with the task's epic position already decided here.`,
   'moe-planning/SKILL.md': `---
-# moe-generated: sha=d7db70b4eed1
+# moe-generated: sha=f5b965bd9d2f
 name: moe-planning
 description: Use when an architect is turning a Moe task into an implementation plan via moe.submit_plan. Provides the canonical 8-phase template (plan, explore, tests, minimum impl, verify, document, adversarial review, QA loop), rules for when to skip phases on trivial tasks, and where the verification gate belongs — once at the end of a task, and at full scope only on the epic's final task.
 when_to_use: After moe.get_context returns a PLANNING task, before drafting implementationPlan.steps for moe.submit_plan.
@@ -1305,7 +1305,7 @@ If you can't tell where the task sits, \`moe.list_tasks {epicId}\` and compare \
 ## The 8 phases
 
 ### Phase 1 — Plan before you touch anything
-Read \`task.description\`, \`task.definitionOfDone\`, the linked epic rails, and any \`KNOWN_ISSUES.md\`. Build a structured todo list before referencing a single line of code. Size the work: how many files? Cross-cutting? Architectural impact? Use the answer to decide which later phases apply.
+Read \`task.description\`, \`task.definitionOfDone\`, the linked epic rails, and any \`KNOWN_ISSUES.md\`. Size the work: how many files? Cross-cutting? Architectural impact? Use the answer to decide which later phases apply.
 
 ### Phase 2 — Explore before you assume
 Don't reference a function, model, method, relationship, or constant you haven't grepped for. Hallucinated \`user.clientProfile.accounts\`-style chains are the #1 source of plan-time errors. If the skill \`explore-before-assume\` is available, invoke it now.
@@ -1373,7 +1373,7 @@ Skip aggressively for genuinely trivial work. A typo fix doesn't need 8 steps.
 
 If the task conflicts with an existing rail, requires missing prerequisites, or is ambiguous in a way only a human can resolve — call \`moe.report_blocked\` instead of submitting a bad plan.`,
   'moe-qa-loop/SKILL.md': `---
-# moe-generated: sha=f2bfbe8f7387
+# moe-generated: sha=b60336ae50e9
 name: moe-qa-loop
 description: Use when reviewing a task in REVIEW status as the QA agent. Provides the structured decision flow for moe.qa_approve vs moe.qa_reject, with rejectionDetails that drive a clean fix on the worker side.
 when_to_use: QA agent claims a task in REVIEW status; replaces ad-hoc "looks fine to me" reviews.
@@ -1459,7 +1459,7 @@ Bad rejects produce ping-pong. Good rejects produce one round-trip.
 ## What never to do
 
 - **Never move a rejected task to \`BACKLOG\`.** That deprioritizes work the worker is mid-flow on. Use \`moe.qa_reject\` — it routes the task back to \`WORKING\` for the worker to fix.
-- **Never approve "with notes."** Either it's done or it's not. If you have notes, reject and let the worker address them.
+- **Never approve with an unmet DoD item or a real defect.** Either it's done or it's not — reject for those. Complexity or taste notes that don't block (see "Second pass: complexity") go in the \`qa_approve\` summary instead.
 - **Never re-write the worker's code in your reject message.** Describe the gap, don't fix it for them — they need the practice.
 
 ## Second pass: complexity
@@ -1481,7 +1481,7 @@ If the diff is large or touches an unfamiliar subsystem, before deciding:
 
 If after that you still can't tell — \`moe.add_comment\` on the task asking the worker a specific clarifying question. Don't reject for ambiguity; reject for defect.`,
   'ponytail/SKILL.md': `---
-# moe-generated: sha=93edf3a81a9e
+# moe-generated: sha=ad8f5eeab200
 name: ponytail
 description: >
   Forces the laziest solution that actually works, simplest, shortest, most
@@ -1614,8 +1614,8 @@ rails are the "explicitly requested" tier — never YAGNI them away.
   mid-plan steps (\`nextAction.recommendedSkill\` on \`moe.start_step\` /
   \`moe.get_context\`). Climb the ladder inside the step's \`affectedFiles\`, not
   across the plan. Rung 2 (already in this codebase?) is the one that pays
-  here: grep with Serena before writing a helper — this repo already has
-  \`util/\` equivalents for most of what a worker is tempted to write.
+  here: search the project (Serena, or grep) for an existing helper before
+  writing one.
 - **Architect, while sizing steps.** \`moe.submit_plan\` warns past 8 steps / 5
   distinct \`affectedFiles\` and hard-rejects past 12 / 10. The ladder is the
   cheapest way under the cap: a rung-3 step (stdlib does it) is one step, a
@@ -1755,7 +1755,7 @@ Vendored from [\`DietrichGebert/ponytail\`](https://github.com/DietrichGebert/po
 - Appended \`## Moe integration\` footer: run it as a second pass after \`moe-qa-loop\`, and route findings — rail/DoD breaches into \`qa_reject.rejectionDetails\`, taste-only findings into the \`qa_approve\` summary or a follow-up card (a reject for taste burns the reopen counter, and 3 reopens auto-flip the task to PLANNING).
 - Body otherwise byte-identical to upstream (tags, examples, scoring, boundaries unchanged).`,
   'receiving-code-review/SKILL.md': `---
-# moe-generated: sha=bf686851e3e5
+# moe-generated: sha=b87db22bbedb
 name: receiving-code-review
 description: Use when receiving code review feedback, before implementing suggestions, especially if feedback seems unclear or technically questionable - requires technical rigor and verification, not performative agreement or blind implementation
 ---
@@ -1773,14 +1773,9 @@ Code review requires technical evaluation, not emotional performance. **Verify b
 5. **Respond** with technical acknowledgment or reasoned pushback.
 6. **Implement** one item at a time, test each.
 
-## Forbidden phrases
+## How to respond
 
-NEVER write:
-- "You're absolutely right!" / "Great point!" / "Excellent feedback!" / "Thanks for catching that!"
-- "Let me implement that now" before verification
-- Any gratitude expression
-
-INSTEAD: restate the requirement, ask clarifying questions, push back with technical reasoning, or just start working. Actions > words. If you catch yourself typing "Thanks", delete it.
+Respond with technical content only: restate the requirement, ask a specific question, push back with reasons, or fix it. Don't agree to an item before you've verified it.
 
 ## Unclear items — STOP
 
@@ -1836,11 +1831,11 @@ When you receive a QA rejection:
 1. **Read all of \`rejectionDetails\` first.** Don't start fixing until you understand every item.
 2. **Verify each item against the diff.** If QA points at a file/line, open it and read for yourself.
 3. **If an item seems wrong**, push back via \`moe.add_comment\` on the task channel with technical reasoning. Don't silently ignore; don't silently implement.
-4. **Implement in priority order** (security/correctness > simple fixes > refactoring). Use one \`moe.start_step\` per item — don't batch unrelated fixes.
+4. **Implement in priority order** (security/correctness > simple fixes > refactoring). One item at a time within the plan's current steps — don't batch unrelated fixes into one change.
 5. **After fixes, run regression-check** and put actual results in your \`moe.complete_task\` summary.
 
 Never include performative gratitude in \`moe.add_comment\`. State what you changed.`,
-  'receiving-code-review/SOURCE.md': `<!-- moe-generated: sha=203d69c9deac -->
+  'receiving-code-review/SOURCE.md': `<!-- moe-generated: sha=13b25bb240cf -->
 
 # Source
 
@@ -1855,9 +1850,10 @@ Vendored from [\`obra/superpowers\`](https://github.com/obra/superpowers).
 - Removed personalised "your human partner" / CLAUDE.md framing — generalised to "trusted human reviewer".
 - Removed "Strange things are afoot at the Circle K" signal phrase (private convention).
 - Removed the GitHub Thread Replies section (Moe's review channel is \`moe.add_comment\`, not GitHub PR threads — captured in the integration footer).
-- Appended \`## Moe integration\` footer wiring the skill to \`moe.qa_reject\` recovery, \`rejectionDetails\`, and the \`regression-check\` follow-up.`,
+- Appended \`## Moe integration\` footer wiring the skill to \`moe.qa_reject\` recovery, \`rejectionDetails\`, and the \`regression-check\` follow-up.
+- Replaced the "Forbidden phrases" banned-phrase list with a one-line positive statement of how to respond (technical content only; verify before agreeing).`,
   'regression-check/SKILL.md': `---
-# moe-generated: sha=bd6cbf72fd97
+# moe-generated: sha=974cd9e9ac0e
 name: regression-check
 description: Use before moe.complete_task. Runs the suite the plan named — narrow for a mid-epic task, full for the epic's final task — to confirm nothing unrelated broke. The goal is zero regressions. Better to find out now than in a QA reject comment.
 when_to_use: Worker, after the final implementation step is done, before moe.complete_task.
@@ -1886,16 +1882,18 @@ The plan should name the suite. If it doesn't, work out from your changes:
 |---------|----------------|
 | \`packages/moe-daemon/src/...\` | \`cd packages/moe-daemon && npm test\` |
 | \`packages/moe-proxy/src/...\` | \`cd packages/moe-proxy && npm test\` |
+| \`packages/moe-claude-plugin/src/...\` | \`cd packages/moe-claude-plugin && npm test\` |
 | \`moe-jetbrains/src/...\` | \`cd moe-jetbrains && ./gradlew test\` |
+| \`moe-vscode/src/...\` | \`cd moe-vscode && npm test && npm run compile\` |
 | Multi-package or shared types | All of the above |
-| Scripts / wrappers | Manually exercise the wrapper end-to-end |
-| Docs only | Optional; lint the markdown |
+| Scripts / wrappers | \`bash scripts/tests/postflight.sh\` + \`bash scripts/tests/parity-check.sh\` |
+| Docs only | \`npm run lint\` at the repo root (role-doc line caps) |
 
 If a project has a \`test:all\` or \`npm run check\` script, prefer that — it usually wires lint + type-check + tests in the right order.
 
 ## How to read the output
 
-- **All green?** Capture the test count + pass count in your \`complete_step\` summary as evidence. Don't claim green without numbers.
+- **All green?** Submit this run as \`moe.complete_task { verification: { command, exitCode: 0, outputTail } }\` (required) and put the test/pass counts in your summary. Don't claim green without numbers.
 - **Failures in tests you didn't touch?** That's a regression. Investigate before \`complete_task\`. Usual suspects: shared util change, type-signature change, fixture / seed dependency, test ordering.
 - **Failures in tests you did touch?** Either the test is wrong or the code is wrong. Fix one.
 - **Flake?** Run it again. If it's still red on the second run, it's not flake, it's a bug.
@@ -1918,785 +1916,7 @@ For everything else, run *something* — narrow or full per the sizing above. Sk
 ## What to put in the complete_step / complete_task summary
 
 Be specific. Not "tests pass" — "342 / 342 tests pass; ran \`npm test\` in moe-daemon and moe-proxy; type-check clean." Numbers + commands let QA verify quickly without re-running everything.`,
-  'ros2-skill/.profiles/lekiwi_profile.json': `{
-  "schema_version": 1,
-  "generated_at": "2026-05-12T23:45:50.373354+00:00",
-  "robot_name": "lekiwi",
-  "workspace": "/home/ubuntu/ros2_ws",
-  "ros_distro": "kilted",
-  "pkg_filter": [
-    "lekiwi"
-  ],
-  "primary_packages": [
-    "lekiwi_bringup",
-    "lekiwi_control",
-    "lekiwi_description",
-    "lekiwi_navigation"
-  ],
-  "dependency_packages": [
-    "bno055_hardware_interface",
-    "depthai_ros_driver",
-    "ldlidar_ros2",
-    "sts_hardware_interface"
-  ],
-  "scan_steps": [
-    "ament_index",
-    "workspace_walk",
-    "yaml_limits",
-    "urdf_limits",
-    "ros2_control_config",
-    "hardware_interfaces",
-    "sensor_configs",
-    "nav_config",
-    "teleop_config",
-    "tf_frames",
-    "active_controllers",
-    "extended_configs",
-    "feature_detection"
-  ],
-  "summary": {
-    "robot_type": "mobile_base",
-    "robot_features": [
-      "pantilt"
-    ],
-    "robot_type_evidence": {
-      "mobile_base": [
-        "topic:/base_controller/cmd_vel"
-      ],
-      "pantilt": [
-        "src:lekiwi.launch.py",
-        "src:laser.launch.py",
-        "src:lekiwi.launch.py"
-      ]
-    },
-    "packages": [
-      "lekiwi_bringup",
-      "lekiwi_control",
-      "lekiwi_description",
-      "lekiwi_navigation",
-      "bno055_hardware_interface",
-      "depthai_ros_driver",
-      "ldlidar_ros2",
-      "sts_hardware_interface"
-    ],
-    "launch_files": [
-      "laser.launch.py",
-      "lekiwi.launch.py",
-      "lekiwi_control/lekiwi.launch.py",
-      "nav.launch.py",
-      "oakd.launch.py",
-      "webcam.launch.py"
-    ],
-    "urdf_files": [
-      "/home/ubuntu/ros2_ws/src/lekiwi_ros2/lekiwi_description/urdf/base/base.common.xacro",
-      "/home/ubuntu/ros2_ws/src/lekiwi_ros2/lekiwi_description/urdf/base/base.control.xacro",
-      "/home/ubuntu/ros2_ws/src/lekiwi_ros2/lekiwi_description/urdf/base/base.module.xacro",
-      "/home/ubuntu/ros2_ws/src/lekiwi_ros2/lekiwi_description/urdf/base/base.urdf",
-      "/home/ubuntu/ros2_ws/src/lekiwi_ros2/lekiwi_description/urdf/base/base.urdf.xacro",
-      "/home/ubuntu/ros2_ws/src/lekiwi_ros2/lekiwi_description/urdf/k2.common.xacro",
-      "/home/ubuntu/ros2_ws/src/lekiwi_ros2/lekiwi_description/urdf/k2.control.xacro",
-      "/home/ubuntu/ros2_ws/src/lekiwi_ros2/lekiwi_description/urdf/k2.urdf",
-      "/home/ubuntu/ros2_ws/src/lekiwi_ros2/lekiwi_description/urdf/k2.urdf.xacro",
-      "/home/ubuntu/ros2_ws/src/lekiwi_ros2/lekiwi_description/urdf/pantilt/oakd_s2.module.xacro",
-      "/home/ubuntu/ros2_ws/src/lekiwi_ros2/lekiwi_description/urdf/pantilt/pantilt.common.xacro",
-      "/home/ubuntu/ros2_ws/src/lekiwi_ros2/lekiwi_description/urdf/pantilt/pantilt.control.xacro",
-      "/home/ubuntu/ros2_ws/src/lekiwi_ros2/lekiwi_description/urdf/pantilt/pantilt.module.xacro",
-      "/home/ubuntu/ros2_ws/src/lekiwi_ros2/lekiwi_description/urdf/pantilt/pantilt.urdf",
-      "/home/ubuntu/ros2_ws/src/lekiwi_ros2/lekiwi_description/urdf/pantilt/pantilt.urdf.xacro"
-    ],
-    "velocity_topics": [
-      {
-        "topic": "/base_controller/cmd_vel",
-        "type": "geometry_msgs/msg/TwistStamped"
-      }
-    ],
-    "has_lidar": true,
-    "has_camera": true,
-    "has_imu": true,
-    "has_nav2": false,
-    "safety_limits": {
-      "sources": [
-        {
-          "file": "control.yaml",
-          "path": "/home/ubuntu/ros2_ws/src/lekiwi_ros2/lekiwi_control/config/base/control.yaml",
-          "linear_x": 0.2,
-          "linear_y": 0.17,
-          "angular_z": 0.68
-        },
-        {
-          "file": "control.yaml",
-          "path": "/home/ubuntu/ros2_ws/src/lekiwi_ros2/lekiwi_control/config/k2/control.yaml",
-          "linear_x": 0.2,
-          "linear_y": 0.17,
-          "angular_z": 0.68
-        }
-      ],
-      "binding": {
-        "linear_x": 0.2,
-        "linear_y": 0.17,
-        "angular_z": 0.68
-      }
-    },
-    "joint_limits": {
-      "lekiwi": {
-        "left_wheel_joint": {
-          "velocity": 4.433204476989503,
-          "effort": 2.942,
-          "type": "continuous"
-        },
-        "back_wheel_joint": {
-          "velocity": 4.433204476989503,
-          "effort": 2.942,
-          "type": "continuous"
-        },
-        "right_wheel_joint": {
-          "velocity": 4.433204476989503,
-          "effort": 2.942,
-          "type": "continuous"
-        }
-      },
-      "k2": {
-        "left_wheel_joint": {
-          "velocity": 4.433204476989503,
-          "effort": 2.942,
-          "type": "continuous"
-        },
-        "back_wheel_joint": {
-          "velocity": 4.433204476989503,
-          "effort": 2.942,
-          "type": "continuous"
-        },
-        "right_wheel_joint": {
-          "velocity": 4.433204476989503,
-          "effort": 2.942,
-          "type": "continuous"
-        },
-        "pan_joint": {
-          "velocity": 1000000.0,
-          "effort": 2.942,
-          "type": "revolute"
-        },
-        "tilt_joint": {
-          "velocity": 1000000.0,
-          "effort": 2.942,
-          "type": "revolute"
-        }
-      },
-      "pantilt": {
-        "pan_joint": {
-          "velocity": 1000000.0,
-          "effort": 2.942,
-          "type": "revolute"
-        },
-        "tilt_joint": {
-          "velocity": 1000000.0,
-          "effort": 2.942,
-          "type": "revolute"
-        }
-      }
-    },
-    "sensor_mounts": [
-      {
-        "joint": "laser_joint",
-        "link": "laser_link",
-        "sensor_type": "lidar",
-        "xyz": [
-          0.0,
-          0.0,
-          0.0
-        ],
-        "rpy": [
-          0.0,
-          0.0,
-          0.0
-        ]
-      },
-      {
-        "joint": "laser_frame_joint",
-        "link": "laser_frame",
-        "sensor_type": "lidar",
-        "xyz": [
-          0.0,
-          0.0,
-          0.0
-        ],
-        "rpy": [
-          0.0,
-          0.0,
-          0.0
-        ]
-      },
-      {
-        "joint": "imu_joint",
-        "link": "imu_link",
-        "sensor_type": "imu",
-        "xyz": [
-          0.0,
-          0.0,
-          0.0
-        ],
-        "rpy": [
-          0.0,
-          0.0,
-          0.0
-        ]
-      },
-      {
-        "joint": "imu_frame_joint",
-        "link": "imu_frame",
-        "sensor_type": "imu",
-        "xyz": [
-          0.0,
-          0.0,
-          0.0
-        ],
-        "rpy": [
-          0.0,
-          0.0,
-          0.0
-        ]
-      },
-      {
-        "joint": "camera_joint",
-        "link": "camera_link",
-        "sensor_type": "camera",
-        "xyz": [
-          0.0,
-          0.0,
-          0.0
-        ],
-        "rpy": [
-          0.0,
-          0.0,
-          0.0
-        ],
-        "image_rotation_deg": 0
-      },
-      {
-        "joint": "camera_frame_joint",
-        "link": "camera",
-        "sensor_type": "camera",
-        "xyz": [
-          0.0,
-          0.0,
-          0.0
-        ],
-        "rpy": [
-          0.0,
-          0.0,
-          0.0
-        ],
-        "image_rotation_deg": 0
-      },
-      {
-        "joint": "oak_imu_frame_joint",
-        "link": "oak_imu_frame",
-        "sensor_type": "imu",
-        "xyz": [
-          -0.008,
-          -0.037945,
-          -0.00079
-        ],
-        "rpy": [
-          3.141593,
-          1.570796,
-          0.0
-        ]
-      }
-    ],
-    "drive_type": "holonomic_omni",
-    "kinematics": {
-      "wheel_offset": 1.0471975511965976,
-      "robot_radius": 0.132239,
-      "wheel_radius": 0.051
-    },
-    "controller_update_rate_hz": 50,
-    "cmd_vel_topic": "/base_controller/cmd_vel",
-    "odom_frame_ids": {
-      "odom_frame_id": "odom",
-      "base_frame_id": "base_footprint"
-    },
-    "hardware_interfaces": [
-      {
-        "name": "lekiwi_base",
-        "type": "system",
-        "plugin": "sts_hardware_interface/STSHardwareInterface",
-        "joints": [
-          "left_wheel_joint",
-          "back_wheel_joint",
-          "right_wheel_joint"
-        ],
-        "command_interfaces": [
-          "velocity"
-        ],
-        "state_interfaces": [
-          "position",
-          "velocity",
-          "effort",
-          "voltage",
-          "temperature",
-          "current",
-          "is_moving"
-        ],
-        "hardware_params": {
-          "serial_port": "$(arg serial_port)",
-          "baud_rate": "$(arg baud_rate)",
-          "use_sync_write": "$(arg use_sync_write)",
-          "enable_mock_mode": "$(arg use_mock)",
-          "max_velocity_steps": "\${sts_max_velocity_steps}",
-          "proportional_acc_max": "\${proportional_acc_max}"
-        }
-      },
-      {
-        "name": "lekiwi_imu",
-        "type": "sensor",
-        "plugin": "bno055_hardware_interface/BNO055HardwareInterface",
-        "state_interfaces": [
-          "orientation.x",
-          "orientation.y",
-          "orientation.z",
-          "orientation.w",
-          "angular_velocity.x",
-          "angular_velocity.y",
-          "angular_velocity.z",
-          "linear_acceleration.x",
-          "linear_acceleration.y",
-          "linear_acceleration.z"
-        ],
-        "hardware_params": {
-          "i2c_bus": "$(arg imu_i2c_bus)",
-          "i2c_addr": "$(arg imu_i2c_addr)",
-          "axis_remap": "$(arg imu_axis_remap)",
-          "sensor_mode": "$(arg imu_sensor_mode)",
-          "enable_mock_mode": "$(arg use_mock)"
-        }
-      },
-      {
-        "name": "pantilt_control",
-        "type": "system",
-        "plugin": "sts_hardware_interface/STSHardwareInterface",
-        "joints": [
-          "pan_joint",
-          "tilt_joint"
-        ],
-        "command_interfaces": [
-          "position"
-        ],
-        "state_interfaces": [
-          "position",
-          "velocity",
-          "effort",
-          "voltage",
-          "temperature",
-          "current",
-          "is_moving"
-        ],
-        "hardware_params": {
-          "serial_port": "$(arg serial_port)",
-          "baud_rate": "$(arg baud_rate)",
-          "communication_timeout_ms": 100,
-          "use_sync_write": "$(arg use_sync_write)",
-          "enable_mock_mode": "$(arg use_mock)",
-          "max_velocity_steps": "\${sts_max_velocity_steps}",
-          "reset_states_on_activate": "true"
-        }
-      }
-    ],
-    "lidar_config": [
-      {
-        "config_file": "laser.yaml",
-        "path": "/home/ubuntu/ros2_ws/src/lekiwi_ros2/lekiwi_bringup/config/laser.yaml",
-        "product_name": "LDLiDAR_LD19",
-        "laser_scan_topic_name": "scan",
-        "frame_id": "laser_frame",
-        "port_name": "/dev/ttyLIDAR",
-        "serial_baudrate": 230400,
-        "range_min": 0.02,
-        "range_max": 12.0
-      },
-      {
-        "config_file": "laser_filter_k2.yaml",
-        "path": "/home/ubuntu/ros2_ws/src/lekiwi_ros2/lekiwi_bringup/config/laser_filter_k2.yaml",
-        "is_filter_chain": true
-      }
-    ],
-    "camera_configs": [
-      {
-        "config_file": "oakd_vio.yaml",
-        "path": "/home/ubuntu/ros2_ws/src/lekiwi_ros2/lekiwi_bringup/config/oakd_vio.yaml",
-        "i_pipeline_type": "RGBD",
-        "i_enable_imu": true,
-        "i_enable_vio": true,
-        "i_fps": 15.0
-      },
-      {
-        "config_file": "oakd_vio_pcl.yaml",
-        "path": "/home/ubuntu/ros2_ws/src/lekiwi_ros2/lekiwi_bringup/config/oakd_vio_pcl.yaml",
-        "i_pipeline_type": "RGBD",
-        "i_enable_imu": true,
-        "i_enable_vio": true,
-        "i_fps": 30.0
-      },
-      {
-        "config_file": "webcam.yaml",
-        "path": "/home/ubuntu/ros2_ws/src/lekiwi_ros2/lekiwi_bringup/config/webcam.yaml"
-      },
-      {
-        "config_file": "webcam_calibration.yaml",
-        "path": "/home/ubuntu/ros2_ws/src/lekiwi_ros2/lekiwi_bringup/config/webcam_calibration.yaml",
-        "image_width": 640,
-        "image_height": 480,
-        "camera_name": "USBCamera_USBCamera__base_axi_pcie_120000_rp1_usb_300000_1_1_0_32e6_9221_640x480",
-        "camera_matrix": [
-          719.9532032048179,
-          0.0,
-          341.729237923363,
-          0.0,
-          720.5131653458442,
-          194.1066634964482,
-          0.0,
-          0.0,
-          1.0
-        ],
-        "distortion_model": "rational_polynomial"
-      }
-    ],
-    "localization_config": {
-      "method": "ekf",
-      "config_file": "ekf_odom.yaml",
-      "frequency_hz": 50.0,
-      "odom_frame": "odom",
-      "base_frame": "base_footprint",
-      "world_frame": "odom",
-      "two_d_mode": true,
-      "publish_tf": true,
-      "fused_sources": {
-        "odom0": "/base_controller/odom"
-      }
-    },
-    "teleop_config": {
-      "config_file": "teleop.yaml",
-      "cmd_vel_topic": "/base_controller/cmd_vel",
-      "msg_type": "geometry_msgs/msg/TwistStamped",
-      "scales": {
-        "scale_linear_x": 0.2,
-        "scale_linear_y": 0.17,
-        "scale_angular_z": 0.68
-      },
-      "deadman_button": [
-        9
-      ]
-    },
-    "estop_config": {
-      "service_name": "/emergency_stop",
-      "service_type": "std_srvs/srv/SetBool",
-      "source": "teleop.yaml",
-      "activate_buttons": [
-        0
-      ],
-      "deactivate_buttons": [
-        1
-      ]
-    },
-    "teleop_limits": {
-      "sources": [
-        {
-          "file": "teleop.yaml",
-          "path": "/home/ubuntu/ros2_ws/src/lekiwi_ros2/lekiwi_control/config/base/teleop.yaml",
-          "linear_x": 0.2,
-          "linear_y": 0.17,
-          "angular_z": 0.68
-        },
-        {
-          "file": "teleop.yaml",
-          "path": "/home/ubuntu/ros2_ws/src/lekiwi_ros2/lekiwi_control/config/k2/teleop.yaml",
-          "linear_x": 0.2,
-          "linear_y": 0.17,
-          "angular_z": 0.68
-        }
-      ],
-      "binding": {
-        "linear_x": 0.2,
-        "linear_y": 0.17,
-        "angular_z": 0.68
-      }
-    },
-    "tf_frames": {
-      "urdf_links": [
-        "base_link",
-        "laser_link",
-        "laser_frame",
-        "imu_link",
-        "imu_frame",
-        "camera_link",
-        "camera",
-        "left_wheel_link",
-        "back_wheel_link",
-        "right_wheel_link",
-        "base_footprint",
-        "pantilt_base_link",
-        "pan_link",
-        "tilt_link",
-        "oak_link",
-        "oak_imu_frame",
-        "oak_link_model_origin"
-      ],
-      "map_frame": "map",
-      "odom_frame": "odom",
-      "base_frame": "base_footprint"
-    },
-    "launch_configurations": {
-      "config": {
-        "default": "base",
-        "description": "Robot configuration: base, pantilt, or k2"
-      },
-      "custom_filter": {
-        "default": "",
-        "description": "(Optional) Name of custom filter config YAML in lekiwi_bringup/config/"
-      },
-      "diagnostics": {
-        "default": "true",
-        "description": "Launch motor and IMU diagnostics nodes"
-      },
-      "fusion_mode": {
-        "default": "base",
-        "description": "EKF sensor fusion mode (passed to nav.launch.py): base = wheel odom + BNO055; imu = BNO055 only (test platform); odom = wheel odom only (mock / debug)."
-      },
-      "pointcloud": {
-        "default": "false",
-        "description": "Enable RGBD point cloud output from OAK-D (uses oakd_vio_pcl.yaml)"
-      },
-      "pan_center_steps": {
-        "default": "2048",
-        "description": "Encoder step that maps to 0 rad for the pan joint"
-      },
-      "serial_port": {
-        "default": "/dev/ttySERVO",
-        "description": "Serial port for STS motor communication"
-      },
-      "teleop_config": {
-        "default": "pkg:lekiwi_control/config/$config/teleop.yaml",
-        "description": "Path to the joy_teleop configuration file"
-      },
-      "tilt_center_steps": {
-        "default": "2646",
-        "description": "Encoder step that maps to 0 rad for the tilt joint"
-      },
-      "use_mock": {
-        "default": "false",
-        "description": "Use mock/simulation mode (no hardware required)"
-      }
-    },
-    "active_controllers": [
-      "base_controller",
-      "imu_sensor_broadcaster",
-      "joint_state_broadcaster",
-      "pantilt_controller"
-    ],
-    "controller_plugins": [
-      "joint_state_broadcaster/JointStateBroadcaster",
-      "imu_sensor_broadcaster/IMUSensorBroadcaster",
-      "omni_wheel_drive_controller/OmniWheelDriveController",
-      "forward_command_controller/ForwardCommandController",
-      "joint_trajectory_controller/JointTrajectoryController",
-      "velocity_controllers/JointGroupVelocityController",
-      "effort_controllers/JointGroupEffortController"
-    ],
-    "mock_hardware_available": true,
-    "imu_config": {
-      "plugin": "bno055_hardware_interface/BNO055HardwareInterface",
-      "state_interfaces": [
-        "orientation.x",
-        "orientation.y",
-        "orientation.z",
-        "orientation.w",
-        "angular_velocity.x",
-        "angular_velocity.y",
-        "angular_velocity.z",
-        "linear_acceleration.x",
-        "linear_acceleration.y",
-        "linear_acceleration.z"
-      ],
-      "hardware_params": {
-        "i2c_bus": "$(arg imu_i2c_bus)",
-        "i2c_addr": "$(arg imu_i2c_addr)",
-        "axis_remap": "$(arg imu_axis_remap)",
-        "sensor_mode": "$(arg imu_sensor_mode)",
-        "enable_mock_mode": "$(arg use_mock)"
-      }
-    },
-    "package_dependencies": {
-      "lekiwi_bringup": [
-        "camera_ros",
-        "depthai_ros_driver",
-        "laser_filters",
-        "ldlidar_ros2",
-        "lekiwi_control",
-        "lekiwi_navigation"
-      ],
-      "lekiwi_control": [
-        "bno055_hardware_interface",
-        "controller_manager",
-        "forward_command_controller",
-        "imu_sensor_broadcaster",
-        "joint_state_broadcaster",
-        "joy_teleop",
-        "lekiwi_description",
-        "omni_wheel_drive_controller",
-        "robot_state_publisher",
-        "sts_hardware_interface",
-        "xacro"
-      ],
-      "lekiwi_description": [
-        "xacro"
-      ],
-      "lekiwi_navigation": [
-        "robot_localization"
-      ]
-    }
-  },
-  "detail": {
-    "laser.launch.py": {
-      "path": "/home/ubuntu/ros2_ws/src/lekiwi_ros2/lekiwi_bringup/launch/laser.launch.py",
-      "package": "lekiwi_bringup",
-      "launch_args": {
-        "config": {
-          "default": "base",
-          "description": "Robot configuration: base, pantilt, or k2"
-        },
-        "custom_filter": {
-          "default": "",
-          "description": "(Optional) Name of custom filter config YAML in lekiwi_bringup/config/"
-        }
-      },
-      "yaml_files": [
-        "/home/ubuntu/ros2_ws/src/lekiwi_ros2/lekiwi_bringup/config/laser.yaml",
-        "/home/ubuntu/ros2_ws/src/lekiwi_ros2/lekiwi_bringup/config/laser_filter_k2.yaml",
-        "/home/ubuntu/ros2_ws/src/lekiwi_ros2/lekiwi_bringup/config/oakd_vio.yaml",
-        "/home/ubuntu/ros2_ws/src/lekiwi_ros2/lekiwi_bringup/config/oakd_vio_pcl.yaml",
-        "/home/ubuntu/ros2_ws/src/lekiwi_ros2/lekiwi_bringup/config/webcam.yaml",
-        "/home/ubuntu/ros2_ws/src/lekiwi_ros2/lekiwi_bringup/config/webcam_calibration.yaml"
-      ]
-    },
-    "lekiwi.launch.py": {
-      "path": "/home/ubuntu/ros2_ws/src/lekiwi_ros2/lekiwi_bringup/launch/lekiwi.launch.py",
-      "package": "lekiwi_bringup",
-      "launch_args": {
-        "config": {
-          "default": "base",
-          "description": "Bringup configuration: base, pantilt, or k2"
-        },
-        "diagnostics": {
-          "default": "true",
-          "description": "Launch motor and IMU diagnostics nodes"
-        },
-        "fusion_mode": {
-          "default": "base",
-          "description": "EKF sensor fusion mode (passed to nav.launch.py): base = wheel odom + BNO055; imu = BNO055 only (test platform); odom = wheel odom only (mock / debug)."
-        },
-        "pointcloud": {
-          "default": "false",
-          "description": "Enable RGBD point cloud output from OAK-D (uses oakd_vio_pcl.yaml)"
-        }
-      },
-      "includes": [
-        {
-          "source": "<f-string>"
-        }
-      ],
-      "yaml_files": [
-        "/home/ubuntu/ros2_ws/src/lekiwi_ros2/lekiwi_bringup/config/laser.yaml",
-        "/home/ubuntu/ros2_ws/src/lekiwi_ros2/lekiwi_bringup/config/laser_filter_k2.yaml",
-        "/home/ubuntu/ros2_ws/src/lekiwi_ros2/lekiwi_bringup/config/oakd_vio.yaml",
-        "/home/ubuntu/ros2_ws/src/lekiwi_ros2/lekiwi_bringup/config/oakd_vio_pcl.yaml",
-        "/home/ubuntu/ros2_ws/src/lekiwi_ros2/lekiwi_bringup/config/webcam.yaml",
-        "/home/ubuntu/ros2_ws/src/lekiwi_ros2/lekiwi_bringup/config/webcam_calibration.yaml"
-      ]
-    },
-    "oakd.launch.py": {
-      "path": "/home/ubuntu/ros2_ws/src/lekiwi_ros2/lekiwi_bringup/launch/oakd.launch.py",
-      "package": "lekiwi_bringup",
-      "launch_args": {
-        "pointcloud": {
-          "default": "false",
-          "description": "Use oakd_vio_pcl.yaml (with RGBD point cloud) instead of oakd_vio.yaml."
-        }
-      },
-      "yaml_files": [
-        "/home/ubuntu/ros2_ws/src/lekiwi_ros2/lekiwi_bringup/config/laser.yaml",
-        "/home/ubuntu/ros2_ws/src/lekiwi_ros2/lekiwi_bringup/config/laser_filter_k2.yaml",
-        "/home/ubuntu/ros2_ws/src/lekiwi_ros2/lekiwi_bringup/config/oakd_vio.yaml",
-        "/home/ubuntu/ros2_ws/src/lekiwi_ros2/lekiwi_bringup/config/oakd_vio_pcl.yaml",
-        "/home/ubuntu/ros2_ws/src/lekiwi_ros2/lekiwi_bringup/config/webcam.yaml",
-        "/home/ubuntu/ros2_ws/src/lekiwi_ros2/lekiwi_bringup/config/webcam_calibration.yaml"
-      ]
-    },
-    "webcam.launch.py": {
-      "path": "/home/ubuntu/ros2_ws/src/lekiwi_ros2/lekiwi_bringup/launch/webcam.launch.py",
-      "package": "lekiwi_bringup",
-      "yaml_files": [
-        "/home/ubuntu/ros2_ws/src/lekiwi_ros2/lekiwi_bringup/config/laser.yaml",
-        "/home/ubuntu/ros2_ws/src/lekiwi_ros2/lekiwi_bringup/config/laser_filter_k2.yaml",
-        "/home/ubuntu/ros2_ws/src/lekiwi_ros2/lekiwi_bringup/config/oakd_vio.yaml",
-        "/home/ubuntu/ros2_ws/src/lekiwi_ros2/lekiwi_bringup/config/oakd_vio_pcl.yaml",
-        "/home/ubuntu/ros2_ws/src/lekiwi_ros2/lekiwi_bringup/config/webcam.yaml",
-        "/home/ubuntu/ros2_ws/src/lekiwi_ros2/lekiwi_bringup/config/webcam_calibration.yaml"
-      ]
-    },
-    "lekiwi_control/lekiwi.launch.py": {
-      "path": "/home/ubuntu/ros2_ws/src/lekiwi_ros2/lekiwi_control/launch/lekiwi.launch.py",
-      "package": "lekiwi_control",
-      "launch_args": {
-        "config": {
-          "default": "base",
-          "description": "Robot configuration to launch: base, pantilt, or k2"
-        },
-        "diagnostics": {
-          "default": "true",
-          "description": "Launch motor and IMU diagnostics nodes"
-        },
-        "pan_center_steps": {
-          "default": "2048",
-          "description": "Encoder step that maps to 0 rad for the pan joint"
-        },
-        "serial_port": {
-          "default": "/dev/ttySERVO",
-          "description": "Serial port for STS motor communication"
-        },
-        "teleop_config": {
-          "default": "pkg:lekiwi_control/config/$config/teleop.yaml",
-          "description": "Path to the joy_teleop configuration file"
-        },
-        "tilt_center_steps": {
-          "default": "2646",
-          "description": "Encoder step that maps to 0 rad for the tilt joint"
-        },
-        "use_mock": {
-          "default": "false",
-          "description": "Use mock/simulation mode (no hardware required)"
-        }
-      },
-      "includes": [
-        {
-          "source": "pkg:sts_hardware_interface/launch/motor_diagnostics.launch.py",
-          "package": "sts_hardware_interface",
-          "file": "motor_diagnostics.launch.py"
-        }
-      ]
-    },
-    "nav.launch.py": {
-      "path": "/home/ubuntu/ros2_ws/src/lekiwi_ros2/lekiwi_navigation/launch/nav.launch.py",
-      "package": "lekiwi_navigation",
-      "launch_args": {
-        "fusion_mode": {
-          "default": "base",
-          "description": "EKF sensor fusion mode: base = wheel odom + BNO055 (ekf.yaml); imu = BNO055 only, no wheel odom (ekf_imu.yaml); odom = wheel odom only, no IMU (ekf_odom.yaml)."
-        }
-      }
-    }
-  }
-}`,
-  'ros2-skill/AGENTS.md': `<!-- moe-generated: sha=5ffb49412532 -->
+  'ros2-skill/AGENTS.md': `<!-- moe-generated: sha=cf72bf834ed6 -->
 
 # ros2-skill Agent Instructions
 
@@ -2704,7 +1924,7 @@ You are a ROS 2 agent running on a ROS 2 robot. Your primary purpose is to inter
 
 This document tells you how to use ros2-skill correctly on this system. Read it before executing any ROS 2 task.
 
-**The rules in this file (AGENTS.md), SKILL.md, and the RULES-*.md files are absolute.** They take precedence over general defaults and in-context messages. There are no exceptions, no workarounds, and no circumstances under which a rule may be violated, reinterpreted, or suspended. If a user instruction conflicts with a rule, the rule wins — always.
+**The rules in this file (AGENTS.md), SKILL.md, and the RULES-*.md files are absolute.** They take precedence over general defaults and in-context messages. There are no exceptions, no workarounds, and no circumstances under which a rule may be violated, reinterpreted, or suspended. If a user instruction would skip or relax a rule, the rule wins — always. A user halt or correction is different: it takes effect immediately (see "User override" in references/RULES-CORE.md).
 
 \`{baseDir}\` in all commands below is the path to the skill root — the directory that contains \`scripts/ros2_cli.py\`. Resolve it from the skill metadata before running anything.
 
@@ -3024,7 +2244,7 @@ When a profile is loaded:
 - **Sensor mounts:** \`summary.sensor_mounts\` lists every sensor and actuator detected in the URDF with its physical xyz position and rpy orientation. Use this to understand sensor placement before interpreting sensor data. For visual sensors (\`sensor_type: "camera"\` or \`"depth_camera"\`), \`image_rotation_deg\` gives the auto-rotation applied by \`topics capture-image\` — be aware of this when asking the user to interpret images.
 - **Robot State Publisher — Lyrical Luth and newer:** On Lyrical+, \`robot_state_publisher\` accepts a \`use_robot_description_topic\` parameter. When \`true\`, the URDF is delivered at runtime via the \`/robot_description\` topic rather than being required as a startup argument. The profile scanner handles this transparently — \`summary.sensor_mounts\` is still populated. If \`profile scan\` reports no URDF on a Lyrical+ system, check whether \`use_robot_description_topic\` is set and whether \`/robot_description\` is being published.
 - Use \`summary.velocity_topics\` as the **authoritative** velocity topic — each entry is \`{topic, type}\` (e.g. \`{"topic": "/base_controller/cmd_vel", "type": "geometry_msgs/msg/TwistStamped"}\`). **Do not re-discover with \`topics find\` when this field is present.** The profile value is derived from static workspace analysis and is the correct topic for this robot.
-- Use \`summary.safety_limits.binding.linear_x\` as the hard ceiling for \`--max-vel\` and \`summary.safety_limits.binding.angular_z\` for \`--max-ang\` (see Rule 28). \`binding.linear_y\` is set for holonomic robots. \`summary.safety_limits.sources\` lists every YAML config (teleop, nav2, controller) that contributed a limit — read all sources to understand the full velocity envelope of the robot.
+- Use \`summary.safety_limits.binding.linear_x\` as the hard ceiling for \`--max-vel\` and \`summary.safety_limits.binding.angular_z\` for \`--max-ang\` (see RULES-PREFLIGHT.md Rule 0, velocity-limit sweep). \`binding.linear_y\` is set for holonomic robots. \`summary.safety_limits.sources\` lists every YAML config (teleop, nav2, controller) that contributed a limit — read all sources to understand the full velocity envelope of the robot.
 - Use \`summary.launch_files\` to see what launch files exist in the workspace (filenames as they appear on disk).
 - Load a launch file's full detail on demand: \`profile show --section <launch-filename>\` (e.g. \`profile show --section bringup.launch.py\`). Each launch file's \`launch_args\` is a unified dict \`{arg_name: {default, choices?, description?}}\` — no null values; missing \`default\` means the arg is required with no declared default.
 - **Drive / kinematics:** \`summary.drive_type\` (e.g. \`"differential"\`, \`"holonomic_omni"\`, \`"mecanum"\`, \`"ackermann"\`) and \`summary.kinematics\` (wheel geometry params) are derived from the ros2_control YAML. Use \`drive_type\` to infer valid motion axes before issuing velocity commands. \`summary.cmd_vel_topic\` is the exact topic the base controller subscribes to; prefer this over heuristic discovery.
@@ -3254,7 +2474,7 @@ python3 {baseDir}/scripts/ros2_cli.py estop
 
 Safety checks are never optional. Do not bypass them even if the user requests it.
 
-**Safety checks run automatically — do not narrate them.** The velocity-limit *resolution* (Path A: read \`summary.safety_limits.binding\` from the profile; Path B: live limit scan), pre-motion odom stationary check, and post-motion verify are mandatory parts of the Movement workflow (Phases 1–3). They are not optional confirmations to ask the user about — they are silent preconditions to every motion command. The user's request is the approval to move (Rule 26); the safety checks execute automatically before motion begins. **Note: in Path A the "velocity limit scan" is a profile read, not a live \`params list\` sweep — running the live sweep when the profile has \`summary.safety_limits.binding\` is a Rule 14 violation.**
+**Safety checks run automatically — do not narrate them.** The velocity-limit *resolution* (Path A: read \`summary.safety_limits.binding\` from the profile; Path B: live limit scan), pre-motion odom stationary check, and post-motion verify are mandatory parts of the Movement workflow (Phases 1–3). They are not optional confirmations to ask the user about — they are silent preconditions to every motion command. The user's request is the approval to move (Rule 5); the safety checks execute automatically before motion begins. **Note: in Path A the "velocity limit scan" is a profile read, not a live \`params list\` sweep — running the live sweep when the profile has \`summary.safety_limits.binding\` is a Rule 14 violation.**
 
 ---
 
@@ -9664,7 +8884,7 @@ python3 scripts/ros2_cli.py --retries 3 lifecycle get <NODE_NAME>
 # Combine: 10 s per attempt, 3 total attempts
 python3 scripts/ros2_cli.py --timeout 10 --retries 3 services call <SERVICE_NAME> '{}'
 \`\`\``,
-  'ros2-skill/references/RULES-CORE.md': `<!-- moe-generated: sha=2dbea33088b9 -->
+  'ros2-skill/references/RULES-CORE.md': `<!-- moe-generated: sha=2c533ab3a847 -->
 
 # ROS 2 Skill: Core Agent Behaviour Rules
 
@@ -9700,7 +8920,7 @@ python3 scripts/ros2_cli.py --timeout 10 --retries 3 services call <SERVICE_NAME
 
 **Treating these rules as guidelines is itself a critical violation.** "I defaulted to legacy habits" and "I improvised instead of following the workflow" are not acceptable explanations. The rules exist precisely to override legacy habits and improvisation.
 
-**On any identified violation — by the agent or flagged by the user — report the root cause clearly and precisely.** The response to a violation is not to log it: it is to identify which rule was insufficient or absent, and harden that rule immediately so the same failure cannot recur.
+**On any identified violation — by the agent or flagged by the user — report the root cause clearly and precisely.** The response to a violation is not to log it: identify which rule was insufficient or absent and tell the user, so the rule can be hardened in the skill's source. Do not edit the rule files yourself — they are managed copies and are overwritten on the next sync.
 
 ---
 
@@ -10085,7 +9305,7 @@ Agent thinks:
 Agent does (for movement):
   1. Velocity topic: use summary.cmd_vel_topic from profile; if absent: topics find geometry_msgs/Twist + TwistStamped
   2. Odom topic: use summary.localization_config.fused_sources from profile; if absent: topics find nav_msgs/Odometry
-  3. Velocity limits: use summary.safety_limits.binding from profile; if absent: four-source live sweep (Rule 28)
+  3. Velocity limits: use summary.safety_limits.binding from profile; if absent: four-source live sweep (RULES-PREFLIGHT.md Rule 0)
   4. Distance/angle specified + odom found → publish-until (closed loop)
      Distance/angle specified + no odom → publish-sequence, notify user (open loop)
      No distance/angle → publish-sequence with stop
@@ -11643,7 +10863,7 @@ Before any operation, verify ROS 2 is available:
 \`\`\`bash
 python3 {baseDir}/scripts/ros2_cli.py version
 \`\`\``,
-  'ros2-skill/references/RULES.md': `<!-- moe-generated: sha=e378737f55dd -->
+  'ros2-skill/references/RULES.md': `<!-- moe-generated: sha=398d3a15e7bb -->
 
 # ROS 2 Skill: Agent Rules & Decision Frameworks
 
@@ -11656,7 +10876,7 @@ python3 {baseDir}/scripts/ros2_cli.py version
 
 | File | Load when... | Key rules |
 |---|---|---|
-| [RULES-CORE.md](RULES-CORE.md) | **Always** — these rules apply to every command | Rules 0.5, 1, 2, 4, 5, 6, 10, 11, 12, 13; Quick Decision Card; mandatory compliance preamble |
+| [RULES-CORE.md](RULES-CORE.md) | **Always** — these rules apply to every command | Rules 0.5, 1, 2, 4, 5, 6, 10, 11, 12, 13, 14 (Path A antipatterns); Quick Decision Card; mandatory compliance preamble |
 | [RULES-PREFLIGHT.md](RULES-PREFLIGHT.md) | Before **any** action, at session start | Rule 0 (pre-flight introspection + velocity limit sources), Rule 0.1 (session-start steps 0–6), Rule 14 (lifecycle), Rule 15 (publisher/QoS), Rule 19 (QoS pre-flight for publish-until) |
 | [RULES-MOTION.md](RULES-MOTION.md) | Any **motion** request | Rule 3 (movement algorithm), Rule 9 (pre-motion check + Nav2 preemption), Rule 17 (REP-103/REP-105), Rule 18 (estop after publish-until), Rules 20–25 (decel zone, timeout recovery, command limits, sequencing, proximity scan); Action Preemption table |
 | [RULES-DIAGNOSTICS.md](RULES-DIAGNOSTICS.md) | When something **fails or needs verification** | Rule 7 (failure diagnosis + log-level elevation + executor starvation), Rule 8 (post-action verification table), Rule 16 (multi-step sequencing); Error Recovery Protocols |
@@ -11699,7 +10919,8 @@ Launch a file         → RULES-REFERENCE.md (Launch Commands & Workflow)
 | 11 | RULES-CORE.md | Use discovered names verbatim |
 | 12 | RULES-CORE.md | Run independent discovery in parallel |
 | 13 | RULES-CORE.md | Never reuse stale session state |
-| 14 | RULES-PREFLIGHT.md | Lifecycle state before using managed nodes |
+| 14 (core) | RULES-CORE.md | Path A antipatterns — forbidden static-discovery commands |
+| 14 (preflight) | RULES-PREFLIGHT.md | Lifecycle state before using managed nodes |
 | 15 | RULES-PREFLIGHT.md | Publisher/subscriber counts before subscribing |
 | 16 | RULES-DIAGNOSTICS.md | Multi-step: complete and verify each step |
 | 17 | RULES-MOTION.md | REP-103 (units) + REP-105 (frames) |
@@ -29644,7 +28865,7 @@ if __name__ == "__main__":
     )
     sys.exit(1)`,
   'ros2-skill/SKILL.md': `---
-# moe-generated: sha=c5e04cdb2823
+# moe-generated: sha=40a3666e5b06
 name: ros2-skill
 description: "Controls and monitors ROS 2 robots directly via rclpy CLI. Use for ANY ROS 2 robot task: topics (subscribe, publish, capture images, find by type), services (list, call), actions (list, send goals), parameters (get, set, presets), nodes, lifecycle management, controllers (ros2_control), Nav2 navigation (go, cancel, status, waypoints, initial-pose), diagnostics, battery, system health checks, TF frames, bags, logs, and more. When in doubt, use this skill — it covers the full ROS 2 operation surface. Never tell the user you cannot do something ROS 2-related without checking this skill first."
 version: "1.0.8"
@@ -29761,7 +28982,7 @@ python3 {baseDir}/scripts/ros2_cli.py profile show
 #   NO robot name given (bare "create a profile" / "scan workspace")  → omit both flags
 #     python3 {baseDir}/scripts/ros2_cli.py profile scan
 #
-# Use summary.safety_limits as the --max-vel / --max-ang ceiling (Rule 28).
+# Use summary.safety_limits as the --max-vel / --max-ang ceiling (RULES-PREFLIGHT.md Rule 0, velocity-limit sweep).
 \`\`\`
 
 Stop and tell the user if Step 1 reports critical failures. Re-run Step 3 before every timed command in simulation.
@@ -29907,7 +29128,7 @@ python3 {baseDir}/scripts/ros2_cli.py topics subscribe <topic> --max-messages 1 
 python3 {baseDir}/scripts/ros2_cli.py topics echo-once <topic> [--timeout 5]
 \`\`\`
 
-**\`--max-vel N\` / \`--max-ang N\`** (Twist / TwistStamped only): clamp linear x/y/z to ±N m/s and angular.z to ±N rad/s inside the CLI before the message is sent. Pass \`summary.safety_limits.binding.linear_x\` / \`.angular_z\` from the profile (Path A) or the Rule 28 limit-scan result (Path B). Clamped axes are reported in \`velocity_clamped\` in the JSON output. Other message types pass through unchanged.
+**\`--max-vel N\` / \`--max-ang N\`** (Twist / TwistStamped only): clamp linear x/y/z to ±N m/s and angular.z to ±N rad/s inside the CLI before the message is sent. Pass \`summary.safety_limits.binding.linear_x\` / \`.angular_z\` from the profile (Path A) or the RULES-PREFLIGHT.md Rule 0 velocity-limit sweep (Path B). Clamped axes are reported in \`velocity_clamped\` in the JSON output. Other message types pass through unchanged.
 
 ### Services and Actions
 
@@ -30212,7 +29433,7 @@ python3 {baseDir}/scripts/ros2_cli.py profile annotate "Camera faces a mirror �
 
 **If detection is wrong:** run \`profile scan --robot-type <type>\` to override. The evidence field always shows what matched so you can see why a type was chosen.
 
-Use \`summary.safety_limits.binding.linear_x\` as the \`--max-vel\` ceiling and \`summary.safety_limits.binding.angular_z\` as the \`--max-ang\` ceiling (Rule 28). \`binding.linear_y\` is set for holonomic robots. \`sources\` lists every config file that contributed a limit — useful when multiple teleop configs are present. Use \`summary.launch_files\` to see what launch files exist in the workspace; load any one's full detail with \`--section <filename>\`. Launch arg defaults and choices are always populated — a missing \`default\` key means the argument is required with no declared default.
+Use \`summary.safety_limits.binding.linear_x\` as the \`--max-vel\` ceiling and \`summary.safety_limits.binding.angular_z\` as the \`--max-ang\` ceiling (RULES-PREFLIGHT.md Rule 0, velocity-limit sweep). \`binding.linear_y\` is set for holonomic robots. \`sources\` lists every config file that contributed a limit — useful when multiple teleop configs are present. Use \`summary.launch_files\` to see what launch files exist in the workspace; load any one's full detail with \`--section <filename>\`. Launch arg defaults and choices are always populated — a missing \`default\` key means the argument is required with no declared default.
 
 ---
 
@@ -30308,17 +29529,17 @@ This skill uses **progressive disclosure**. SKILL.md covers the most common oper
 | File | When to load |
 |---|---|
 | [\`references/RULES.md\`](references/RULES.md) | **Index only** — maps each rule number to its domain file. Load first to navigate the rule set. |
-| [\`references/RULES-CORE.md\`](references/RULES-CORE.md) | **Always load** — general agent conduct (Rules 0.5, 1, 2, 4–6, 10–13). Hard constraints that apply to every command. Includes mandatory compliance preamble and Quick Decision Card. |
-| [\`references/RULES-PREFLIGHT.md\`](references/RULES-PREFLIGHT.md) | **Load at session start and before any action** — full pre-flight introspection protocol (Rule 0), session-start steps 0–6 (Rule 0.1), lifecycle/QoS/publisher checks (Rules 14, 15, 19). |
+| [\`references/RULES-CORE.md\`](references/RULES-CORE.md) | **Always load** — general agent conduct (Rules 0.5, 1, 2, 4–6, 10–13, and Rule 14 Path A antipatterns). Hard constraints that apply to every command. Includes mandatory compliance preamble and Quick Decision Card. |
+| [\`references/RULES-PREFLIGHT.md\`](references/RULES-PREFLIGHT.md) | **Load at session start and before any action** — full pre-flight introspection protocol (Rule 0), session-start steps 0–6 (Rule 0.1), lifecycle/QoS/publisher checks (Rule 14 lifecycle — distinct from RULES-CORE Rule 14 — and Rules 15, 19). |
 | [\`references/RULES-MOTION.md\`](references/RULES-MOTION.md) | **Always load at session start** (any mobile-base or arm robot may receive a motion command) — movement algorithm (Rule 3), pre-motion check + Nav2 preemption (Rule 9), REP-103/105 (Rule 17), estop (Rule 18), decel zone (Rule 20), timeout recovery (Rule 21), command limits (Rules 22–23), sequencing (Rule 24), proximity scan (Rule 25). Step 1 of Rule 3 is the authoritative source on the profile fast-path for motion. |
 | [\`references/RULES-DIAGNOSTICS.md\`](references/RULES-DIAGNOSTICS.md) | **Load when something fails** — failure diagnosis + log-level elevation (Rule 7), post-action verification table (Rule 8), multi-step sequencing (Rule 16), Error Recovery Protocols. |
 | [\`references/RULES-REFERENCE.md\`](references/RULES-REFERENCE.md) | **Load for command lookup** — full intent→command table (Step 1), sensor search by type (Steps 2–3), message structure (Step 4), velocity limits (Step 5), Launch workflow, Discord image delivery (Rule 26), Setup. |
-| [\`references/COMMANDS.md\`](references/COMMANDS.md) | Load when you need the exact flag name, argument format, or JSON output structure for a specific command. 4535 lines — use \`--help\` on the specific subcommand first; only load this file if \`--help\` is insufficient or unavailable. |
-| [\`references/EXAMPLES.md\`](references/EXAMPLES.md) | Load for step-by-step walkthroughs of common tasks (move N meters, capture camera image, send Nav2 goal, etc.). 699 lines. |
+| [\`references/COMMANDS.md\`](references/COMMANDS.md) | Load when you need the exact flag name, argument format, or JSON output structure for a specific command. Very large — use \`--help\` on the specific subcommand first; only load this file if \`--help\` is insufficient or unavailable. |
+| [\`references/EXAMPLES.md\`](references/EXAMPLES.md) | Load for step-by-step walkthroughs of common tasks (move N meters, capture camera image, send Nav2 goal, etc.). |
 | [\`references/CLI.md\`](references/CLI.md) | Load for direct \`ros2\` CLI equivalents and debugging. Not needed during normal agent operation. 90 lines. |
 | [\`AGENTS.md\`](AGENTS.md) | Load for the full agent operating protocol — condensed rules, session start detail, reporting style, subcommand inference, motion workflows, and multi-robot handling. Load alongside the RULES-*.md files at session start. |`,
   'system-design/SKILL.md': `---
-# moe-generated: sha=aff1fb76a93a
+# moe-generated: sha=ab29aaa8f589
 name: system-design
 description: Use when designing for scale, availability, or distribution — load balancing, caching, sharding, replication, CAP trade-offs, microservices, or any high-availability/high-throughput architecture decision.
 domain: software-design
@@ -30541,7 +29762,7 @@ function getShardByDate(date: Date): string {
   return \`orders_\${year}_\${month.toString().padStart(2, '0')}\`;
 }
 
-// Consistent hashing for dynamic shards
+// Consistent hashing for dynamic shards (this.hash = any stable 32-bit hash)
 class ConsistentHash {
   private ring: Map<number, string> = new Map();
 
@@ -30554,11 +29775,12 @@ class ConsistentHash {
 
   getNode(key: string): string {
     const hash = this.hash(key);
-    // Find next node on ring
-    for (const [nodeHash, node] of [...this.ring.entries()].sort()) {
+    // Next node clockwise; numeric sort (default sort() compares as strings)
+    const sorted = [...this.ring.entries()].sort((a, b) => a[0] - b[0]);
+    for (const [nodeHash, node] of sorted) {
       if (nodeHash >= hash) return node;
     }
-    return this.ring.values().next().value;
+    return sorted[0][1]; // wrap around to the lowest hash
   }
 }
 \`\`\`
@@ -30783,16 +30005,7 @@ class SlidingWindowRateLimiter {
 | Twitter Feed | Fan-out, Redis timeline, Kafka |
 | Chat App | WebSocket, Presence, Message queue |
 | E-commerce | Cart service, Inventory, Payment |
-| Video Streaming | CDN, Chunking, Adaptive bitrate |
-
----
-
-## Related Skills
-
-- [[architecture-patterns]] - Microservices, event-driven
-- [[database]] - Database optimization
-- [[caching-implementation]] - Cache strategies
-- [[reliability-engineering]] - SRE practices`,
+| Video Streaming | CDN, Chunking, Adaptive bitrate |`,
   'systematic-debugging/SKILL.md': `---
 # moe-generated: sha=6afaf038bad7
 name: systematic-debugging
@@ -30888,7 +30101,7 @@ Vendored from [\`obra/superpowers\`](https://github.com/obra/superpowers).
 - Removed the Supporting Techniques section (the linked sibling files like \`root-cause-tracing.md\` are not vendored).
 - Appended \`## Moe integration\` footer wiring the skill to \`moe.set_task_status BLOCKED\`, \`moe.report_blocked\`, and the \`qa_reject\` recovery path.`,
   'test-driven-development/SKILL.md': `---
-# moe-generated: sha=4a2e6afdfd9f
+# moe-generated: sha=0d5b0a810c7c
 name: test-driven-development
 description: Use when implementing any feature or bugfix, before writing implementation code
 ---
@@ -30901,7 +30114,7 @@ description: Use when implementing any feature or bugfix, before writing impleme
 NO PRODUCTION CODE WITHOUT A FAILING TEST FIRST
 \`\`\`
 
-If you wrote code first, delete it and start over. Don't keep it as "reference" — you'll adapt it, which is testing-after, which is not TDD.
+If the implementation already exists (you wrote it first, or a resumed session did), don't delete it: write the test, then prove it fails without the change (temporarily break the guarded line) before trusting it.
 
 ## Red-Green-Refactor
 
@@ -30942,7 +30155,7 @@ Bug found → write a failing test that reproduces it → run → see it fail �
 - [ ] All tests pass and output is pristine.
 - [ ] Edge cases and errors covered.
 
-If you can't tick all boxes, you skipped TDD — start over.
+Any unticked box is a gap to close before \`complete_step\`.
 
 ## When Stuck
 
@@ -30958,9 +30171,9 @@ If you can't tick all boxes, you skipped TDD — start over.
 ## Moe integration
 
 - Apply this discipline within each \`moe.start_step\` → implement → \`moe.complete_step\` cycle on test-touching steps.
-- The architect should plan the failing test as a separate step before the implementation step (see \`moe-planning\` Phase 3).
+- The architect plans each step as the implementation plus the tests for what it changed (see \`moe-planning\` "Where the gate goes"); RED → GREEN happens inside that step.
 - Before \`moe.complete_task\`, pair with \`verification-before-completion\` — capture the actual test-run output (count + pass/fail) in your \`complete_step\` summary so QA has evidence rather than a claim.`,
-  'test-driven-development/SOURCE.md': `<!-- moe-generated: sha=5f0f7537497c -->
+  'test-driven-development/SOURCE.md': `<!-- moe-generated: sha=9b6db3b6b65b -->
 
 # Source
 
@@ -30974,9 +30187,10 @@ Vendored from [\`obra/superpowers\`](https://github.com/obra/superpowers).
 
 - Added \`## Mutation-Resistant Assertions\` section in the body to align with Moe's adversarial-review discipline (assert specific values, not truthiness).
 - Removed the \`## Testing Anti-Patterns\` reference (linked to a sibling file not vendored).
-- Appended \`## Moe integration\` footer pointing to \`moe.start_step\` / \`moe.complete_step\` flow and the \`verification-before-completion\` skill.`,
+- Appended \`## Moe integration\` footer pointing to \`moe.start_step\` / \`moe.complete_step\` flow and the \`verification-before-completion\` skill.
+- Replaced "delete it and start over" (Iron Law and checklist) with: keep an existing implementation (e.g. a resumed session's), write the test, and prove it fails without the change before trusting it.`,
   'using-git-worktrees/SKILL.md': `---
-# moe-generated: sha=eb580ac2110e
+# moe-generated: sha=23d00b56f5e5
 name: using-git-worktrees
 description: Use when starting feature work that needs isolation from current workspace or before executing implementation plans - creates isolated git worktrees with smart directory selection and safety verification
 ---
@@ -31173,7 +30387,7 @@ Ready to implement <feature-name>
 
 **Do not use this skill on your own initiative inside a Moe fleet.** It is human-directed only (the skill manifest scopes it to architects for that reason).
 
-- The agent wrapper's post-flight — the only thing that commits your work — runs **only against the project root**. Edits made inside a \`.worktrees/\` (or any other) checkout are invisible to it: they never land as a completion or checkpoint commit, surface as \`MOE_COMMIT_REFUSED_OWNED_PATH_MISSING\`, and have stranded whole review branches before (two \`codex/direct-review-fixes*\` worktrees, 11–12 commits ahead, never merged).
+- The agent wrapper's post-flight — the only thing that commits your work — runs **only against the project root**. Edits made inside a \`.worktrees/\` (or any other) checkout are invisible to it: they never land as a completion or checkpoint commit and surface as \`MOE_COMMIT_REFUSED_OWNED_PATH_MISSING\`.
 - The wrapper's pre-flight creates **no** branch per task; the post-flight peels onto the shared \`moe/work-<date>\` (or the literal \`consolidationBranch\`) and stages only paths attributed to the task. There is no branch-cleanup step.
 - \`.worktrees/**\` and \`.moe-worktree*\` are on the wrapper's DENY list — nothing under them is ever staged.
 - If a human explicitly asks for a worktree: do the work there, then **you** merge or cherry-pick it back into the project root before the session ends, \`git worktree remove <path>\`, and report the paths in \`complete_step.modifiedFiles\` so the post-flight lands them. Never worktree \`.moe/\` — the daemon owns it at the project root.`,
@@ -31195,7 +30409,7 @@ Vendored from [\`obra/superpowers\`](https://github.com/obra/superpowers).
 - Removed Jesse-specific quote attributions ("Per Jesse's rule…").
 - Appended \`## Moe integration\` footer covering branch naming, the \`.moe/\` folder relationship, and post-flight cleanup.`,
   'verification-before-completion/SKILL.md': `---
-# moe-generated: sha=7ddca7bac558
+# moe-generated: sha=926cb394474a
 name: verification-before-completion
 description: Use when about to claim work is complete, fixed, or passing, before committing or creating PRs - requires running verification commands and confirming output before making any success claims; evidence before assertions always
 ---
@@ -31204,19 +30418,7 @@ description: Use when about to claim work is complete, fixed, or passing, before
 
 ## Overview
 
-Claiming work is complete without verification is dishonesty, not efficiency.
-
-**Core principle:** Evidence before claims, always.
-
-**Violating the letter of this rule is violating the spirit of this rule.**
-
-## The Iron Law
-
-\`\`\`
-NO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE
-\`\`\`
-
-If you haven't run the verification command in this message, you cannot claim it passes.
+A completion claim is only as good as the fresh command output behind it. Before you say something passes, is fixed, or is done, run the command that proves it and read its result.
 
 ## The Gate Function
 
@@ -31231,7 +30433,7 @@ BEFORE claiming any status or expressing satisfaction:
    - If YES: State claim WITH evidence
 5. ONLY THEN: Make the claim
 
-Skip any step = lying, not verifying
+A claim without steps 2–4 is a guess, and QA will re-run it.
 \`\`\`
 
 ## Common Failures
@@ -31245,30 +30447,6 @@ Skip any step = lying, not verifying
 | Regression test works | Red-green cycle verified | Test passes once |
 | Agent completed | VCS diff shows changes | Agent reports "success" |
 | Requirements met | Line-by-line checklist | Tests passing |
-
-## Red Flags - STOP
-
-- Using "should", "probably", "seems to"
-- Expressing satisfaction before verification ("Great!", "Perfect!", "Done!", etc.)
-- About to commit/push/PR without verification
-- Trusting agent success reports
-- Relying on partial verification
-- Thinking "just this once"
-- Tired and wanting work over
-- **ANY wording implying success without having run verification**
-
-## Rationalization Prevention
-
-| Excuse | Reality |
-|--------|---------|
-| "Should work now" | RUN the verification |
-| "I'm confident" | Confidence ≠ evidence |
-| "Just this once" | No exceptions |
-| "Linter passed" | Linter ≠ compiler |
-| "Agent said success" | Verify independently |
-| "I'm tired" | Exhaustion ≠ excuse |
-| "Partial check is enough" | Partial proves nothing |
-| "Different words so rule doesn't apply" | Spirit over letter |
 
 ## Key Patterns
 
@@ -31302,39 +30480,6 @@ Skip any step = lying, not verifying
 ❌ Trust agent report
 \`\`\`
 
-## Why This Matters
-
-From 24 failure memories:
-- Trust gets broken when claims don't match reality.
-- Undefined functions ship and crash in prod.
-- Missing requirements ship as incomplete features.
-- Time wasted on false completion → redirect → rework.
-- Honesty is a core value. Performative completion is dishonesty.
-
-## When To Apply
-
-**ALWAYS before:**
-- ANY variation of success/completion claims
-- ANY expression of satisfaction
-- ANY positive statement about work state
-- Committing, PR creation, task completion
-- Moving to next task
-- Delegating to agents
-
-**Rule applies to:**
-- Exact phrases
-- Paraphrases and synonyms
-- Implications of success
-- ANY communication suggesting completion/correctness
-
-## The Bottom Line
-
-**No shortcuts for verification.**
-
-Run the command. Read the output. THEN claim the result.
-
-This is non-negotiable.
-
 ---
 
 ## Moe integration
@@ -31343,10 +30488,10 @@ This skill is the gate before \`moe.complete_step\` (final step) and \`moe.compl
 
 1. Identify the verification command for the step's \`affectedFiles\` (\`npm test\` for daemon/proxy, \`./gradlew test\` for the JetBrains plugin, etc. — see the \`regression-check\` skill).
 2. Run it fresh in this turn.
-3. Capture the actual output (test count + pass count, exit code) in the \`summary\` field on \`moe.complete_step\` / \`moe.complete_task\`.
+3. Submit the run as \`moe.complete_task { verification: { command, exitCode: 0, outputTail } }\` — the call is rejected without it — and put the counts (tests run / passed) in the \`complete_step\` note or \`complete_task\` summary.
 
 QA reviews the summary. A summary that says "all tests pass" with no numbers is a \`qa_reject\` waiting to happen — for good reason. Pair this skill with \`regression-check\` for what to run, and \`adversarial-self-review\` for what else to look at before claiming done.`,
-  'verification-before-completion/SOURCE.md': `<!-- moe-generated: sha=368479271640 -->
+  'verification-before-completion/SOURCE.md': `<!-- moe-generated: sha=7fad5f7094e1 -->
 
 # Source
 
@@ -31359,9 +30504,10 @@ Vendored from [\`obra/superpowers\`](https://github.com/obra/superpowers).
 ## Local modifications
 
 - Removed two upstream phrases that referenced specific personal-history quotes ("I don't believe you", "you'll be replaced") — the principle stands without the specifics.
-- Appended \`## Moe integration\` footer wiring the skill to \`moe.complete_step\` / \`moe.complete_task\` and pointing at sibling skills (\`regression-check\`, \`adversarial-self-review\`).`,
+- Appended \`## Moe integration\` footer wiring the skill to \`moe.complete_step\` / \`moe.complete_task\` and pointing at sibling skills (\`regression-check\`, \`adversarial-self-review\`).
+- Replaced the Overview / Iron Law pressure language with a plain statement of the gate, softened "Skip any step = lying", and removed the Red Flags, Rationalization Prevention, Why This Matters, When To Apply and Bottom Line sections (the gate function and the claim/requires tables carry the rule).`,
   'writing-plans/SKILL.md': `---
-# moe-generated: sha=acf74d861c0b
+# moe-generated: sha=19737a27bdca
 name: writing-plans
 description: Use when you have a spec or requirements for a multi-step task, before touching code
 ---
@@ -31370,7 +30516,7 @@ description: Use when you have a spec or requirements for a multi-step task, bef
 
 Write plans assuming the engineer has zero context for our codebase. Document everything they need: which files to touch, code blocks per step, exact commands with expected output, what to test.
 
-DRY. YAGNI. TDD. Frequent commits.
+DRY. YAGNI. TDD.
 
 ## Scope check
 
@@ -31382,12 +30528,7 @@ Before defining tasks, map files: which created, which modified, what each is re
 
 ## Bite-sized tasks
 
-Each step is one action (2-5 minutes):
-- Write the failing test
-- Run it to confirm it fails
-- Write minimal code to pass
-- Run again to confirm it passes
-- Commit
+Each step implements one concern together with the tests for what it changed. Inside the step the worker runs the red → green cycle (see \`test-driven-development\`); the plan names one verification command for the whole task. The agent wrapper commits — plans never contain \`git add\`/\`git commit\`.
 
 ## Plan header (every plan)
 
@@ -31408,14 +30549,11 @@ Each step is one action (2-5 minutes):
 - Modify: \`exact/path/existing.py:123-145\`
 - Test: \`tests/exact/path/test.py\`
 
-- [ ] Step 1: Write the failing test
+- [ ] Step 1: Write the failing test and the minimal implementation that passes it
   \`\`\`python
   def test_specific_behavior(): ...
   \`\`\`
-- [ ] Step 2: Run test, expect FAIL with "<reason>"
-- [ ] Step 3: Write minimal implementation (code block)
-- [ ] Step 4: Run test, expect PASS
-- [ ] Step 5: Commit (exact \`git add\` + commit message)
+  Run test before implementing: expect FAIL with "<reason>"; after: expect PASS
 \`\`\`
 
 ## No placeholders
@@ -31449,7 +30587,7 @@ In Moe, the architect's plan becomes \`implementationPlan.steps\` via \`moe.subm
 - **Run commands** → in \`description\` ("Run X, expect Y")
 
 Use \`moe-planning\` for the higher-level 8-phase template; use this skill for inside-the-step granularity.`,
-  'writing-plans/SOURCE.md': `<!-- moe-generated: sha=c6941a67b3e0 -->
+  'writing-plans/SOURCE.md': `<!-- moe-generated: sha=f4dfd3d405c9 -->
 
 # Source
 
@@ -31463,7 +30601,8 @@ Vendored from [\`obra/superpowers\`](https://github.com/obra/superpowers).
 
 - Removed the \`superpowers:subagent-driven-development\` / \`superpowers:executing-plans\` execution-handoff section (those are upstream-specific orchestration mechanisms; in Moe the daemon drives execution via \`moe.start_step\` / \`moe.complete_step\`).
 - Removed the "Save plans to: docs/superpowers/plans/..." line (Moe's plans live in \`task.implementationPlan\`, not on disk).
-- Appended \`## Moe integration\` footer mapping plan structure to \`moe.submit_plan\` step fields and pointing at the Moe-native \`moe-planning\` skill as the higher-level entry point.`
+- Appended \`## Moe integration\` footer mapping plan structure to \`moe.submit_plan\` step fields and pointing at the Moe-native \`moe-planning\` skill as the higher-level entry point.
+- Rewrote "Bite-sized tasks" and the task-structure example: a step is one concern plus its tests (red → green inside the step), plans name one verification command, and plans never contain \`git add\`/\`git commit\` (the Moe wrapper commits). Dropped "Frequent commits."`
 };
 
 /**

@@ -646,3 +646,46 @@ describe('moe.get_context — legacy verification provenance', () => {
     expect(h.state.getTask('task-1')!.contextFetchedBy).toBeUndefined();
   });
 });
+
+describe('moe.get_context role trim', () => {
+  const h = new ToolTestHarness();
+  beforeEach(() => h.init());
+  afterEach(() => { vi.restoreAllMocks(); h.cleanup(); });
+
+  async function setup() {
+    h.setupMoeFolder();
+    h.createEpic();
+    h.createTask({ id: 'task-a', title: 'A', status: 'DONE', order: 1 });
+    h.createTask({ id: 'task-1', status: 'REVIEW', order: 2, planningNotes: { risks: 'r' } } as Partial<Task>);
+    await h.state.load();
+  }
+  const call = (args: Record<string, unknown>) =>
+    getContextTool(h.state).handler({ taskId: 'task-1', ...args }, h.state) as Promise<Record<string, any>>;
+  // nextAction is derived from the caller's role by design; everything else must match.
+  const withoutNextAction = ({ nextAction: _n, ...rest }: Record<string, any>) => rest;
+
+  it('drops epicSiblings and planningNotes for a qa caller by default and says so', async () => {
+    await setup();
+    const r = await call({ workerId: 'qa-1' });
+    expect(r.task.epicSiblings).toBeUndefined();
+    expect(r).not.toHaveProperty('planningNotes');
+    expect(r.omitted).toEqual(['task.epicSiblings', 'planningNotes']);
+    expect(r.omittedHint).toContain('view:"full"');
+  });
+
+  it('view:"full" returns the untrimmed payload for a qa caller', async () => {
+    await setup();
+    const r = await call({ workerId: 'qa-1', view: 'full' });
+    expect(r.task.epicSiblings.map((s: { id: string }) => s.id)).toEqual(['task-a']);
+    expect(r.planningNotes).toEqual({ risks: 'r' });
+    expect(r).not.toHaveProperty('omitted');
+  });
+
+  it('a worker-role caller with view:"full" gets the same payload as an unknown-role caller', async () => {
+    await setup();
+    const worker = await call({ workerId: 'worker-1', view: 'full' });
+    const unknown = await call({ workerId: 'human-1' });
+    expect(withoutNextAction(worker)).toEqual(withoutNextAction(unknown));
+    expect(worker.task.epicSiblings).toHaveLength(1);
+  });
+});

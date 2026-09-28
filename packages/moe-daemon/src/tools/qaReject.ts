@@ -5,6 +5,7 @@ import { MAX_REOPENS_DEFAULT } from '../types/schema.js';
 import { missingRequired, invalidInput, notFound, invalidState } from '../util/errors.js';
 import { assertWorkerOwns, assertContextFetched } from '../util/enforcement.js';
 import { resetPlanStepsToPending } from '../util/reopen.js';
+import { bumpTier, isTier, planSizeFloor } from '../util/routing.js';
 import { recordReview, resolveReviewedCandidate } from '../state/reviewStore.js';
 
 const VALID_ISSUE_TYPES: QAIssueType[] = [
@@ -14,7 +15,7 @@ const VALID_ISSUE_TYPES: QAIssueType[] = [
 export function qaRejectTool(_state: StateManager): ToolDefinition {
   return {
     name: 'moe.qa_reject',
-    description: 'QA rejects a task in REVIEW status, moving it back to WORKING for fixes',
+    description: 'QA rejects a task in REVIEW status. Normally moves it back to WORKING for the worker to fix. Escalates automatically: when this rejection reaches the task\'s reopen cap (task.maxReopens, default 3) or a failedDodItems entry has now failed twice, the task goes to PLANNING for one re-plan; past the cap it stays in REVIEW, unassigned and flagged for a human. Name the exact DoD items in failedDodItems so repeat failures are detected, and pass candidateId for the bytes you reviewed.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -244,6 +245,11 @@ export function qaRejectTool(_state: StateManager): ToolDefinition {
         // rejectionReason/rejectionDetails, not resume on a stale context stamp.
         contextFetchedBy: [],
         metrics: nextMetrics,
+        // Escalate the launch tier one step for the next attempt (worker fix or
+        // re-plan). A parked task waits for a human, so it keeps its tier.
+        ...(!parkedForHuman
+          ? { tier: bumpTier(isTier(task.tier) ? task.tier : planSizeFloor(task.implementationPlan ?? [], state.project?.settings)) }
+          : {}),
         // Park for a human: clear the assignee (so no worker owns it) and flag
         // it so the QA claim pool skips it. Status stays REVIEW — inert, not
         // re-flipping to PLANNING — until a human clears the flag.

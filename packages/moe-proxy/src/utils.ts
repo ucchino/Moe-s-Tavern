@@ -154,9 +154,10 @@ const WORKER_ID_IS_A_FILTER = new Set([
 ]);
 
 /**
- * Inject MOE_WORKER_ID into tools/call arguments when the caller omits workerId.
- * Only runs for MCP tools/call requests — never touches initialize/tools/list/ping,
- * and never touches a tool that uses `workerId` as a query filter.
+ * Inject MOE_WORKER_ID into tools/call arguments when the caller omits workerId,
+ * and into tools/list params so the daemon can list only this seat's role's tools.
+ * Never touches initialize/ping, and never touches a tool that uses `workerId`
+ * as a query filter.
  * An EMPTY or whitespace-only env value counts as unset: the grok MCP config
  * pins `MOE_WORKER_ID = "${MOE_WORKER_ID:-}"`, which grok expands to "" for a
  * human running `grok` by hand — injecting that would send `workerId: ""` to
@@ -171,6 +172,14 @@ export function injectWorkerId(
     if (typeof envWorkerId !== 'string' || envWorkerId.trim() === '') return false;
     if (!parsed || typeof parsed !== 'object') return false;
     const msg = parsed as Record<string, unknown>;
+    if (msg.method === 'tools/list') {
+      if (msg.params !== undefined && (msg.params === null || typeof msg.params !== 'object' || Array.isArray(msg.params))) return false;
+      const listParams = (msg.params ?? {}) as Record<string, unknown>;
+      if (Object.prototype.hasOwnProperty.call(listParams, 'workerId')) return false;
+      listParams.workerId = envWorkerId;
+      msg.params = listParams;
+      return true;
+    }
     if (msg.method !== 'tools/call') return false;
     const params = msg.params as Record<string, unknown> | undefined;
     if (!params || typeof params !== 'object') return false;

@@ -12,7 +12,7 @@ import { unmetDependsOn } from '../state/dependencyUnblock.js';
 export function listTasksTool(_state: StateManager): ToolDefinition {
   return {
     name: 'moe.list_tasks',
-    description: 'List tasks for an epic (optionally by status). ARCHIVED tasks are hidden by default — pass includeArchived:true or name ARCHIVED in status to see them. counts.archived always reflects the true total.',
+    description: 'List tasks, optionally scoped to one epic (epicId; omit it to list across all epics) and filtered by status. ARCHIVED tasks are hidden by default — pass includeArchived:true or name ARCHIVED in status to see them. counts.archived always reflects the true total.',
     inputSchema: {
       type: 'object',
       properties: {

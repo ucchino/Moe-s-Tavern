@@ -154,6 +154,8 @@ for banner in 'Grok MCP config written to:' 'Grok mode: headless' 'Grok mode: in
   'tool_timeouts = { moe_wait_for_task = 720, moe_chat_wait = 720, moe_wait_for_resource = 720 }'; do
   require_both "grok banner" "$banner"
 done
+# Per-task launch tier (claim_next_task launch hint).
+require_both "launch tier banner" 'Task tier:'
 
 # MCP tools the wrappers call for the ledger.
 for tool in get_commit_scope record_commit record_candidate record_check_run finalize_attempt; do

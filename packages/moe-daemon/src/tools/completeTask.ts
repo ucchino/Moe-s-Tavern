@@ -64,7 +64,7 @@ export function completeTaskTool(_state: StateManager): ToolDefinition {
     inputSchema: {
       type: 'object',
       properties: {
-        taskId: { type: 'string' },
+        taskId: { type: 'string', description: 'The WORKING task to complete' },
         verification: {
           type: 'object',
           description: 'Evidence the verification command was run fresh and passed. exitCode must be 0.',
@@ -76,10 +76,10 @@ export function completeTaskTool(_state: StateManager): ToolDefinition {
           required: ['command', 'exitCode'],
           additionalProperties: false
         },
-        prLink: { type: 'string' },
+        prLink: { type: 'string', description: 'Optional pull/merge request URL recorded on the task' },
         summary: { type: 'string', description: 'What was delivered — persisted as task.completionSummary (capped at 2000 chars) and surfaced to QA and dependent tasks via get_context.' },
         currentBranch: { type: 'string', description: 'Branch the worker is on; enables the consolidationBranch policy check' },
-        workerId: { type: 'string' }
+        workerId: { type: 'string', description: 'Caller worker ID (auto-injected by proxy)' }
       },
       required: ['taskId', 'verification'],
       additionalProperties: false

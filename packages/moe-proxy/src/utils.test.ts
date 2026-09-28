@@ -350,10 +350,19 @@ describe('utils', () => {
       expect((parsed.params.arguments as Record<string, unknown>).workerId).toBeUndefined();
     });
 
+    it('injects workerId into tools/list params, creating params when absent', () => {
+      const withParams = { jsonrpc: '2.0', id: 1, method: 'tools/list', params: { cursor: 'c' } } as Record<string, unknown>;
+      expect(injectWorkerId(withParams, 'worker-abc')).toBe(true);
+      expect(withParams.params).toEqual({ cursor: 'c', workerId: 'worker-abc' });
+      const bare = { jsonrpc: '2.0', id: 2, method: 'tools/list' } as Record<string, unknown>;
+      expect(injectWorkerId(bare, 'worker-abc')).toBe(true);
+      expect(bare.params).toEqual({ workerId: 'worker-abc' });
+      expect(injectWorkerId({ jsonrpc: '2.0', id: 3, method: 'tools/list' }, '')).toBe(false);
+    });
+
     it('does nothing for non-tool methods', () => {
       const cases = [
         { method: 'initialize', params: {} },
-        { method: 'tools/list', params: {} },
         { method: 'ping' },
       ];
       for (const c of cases) {

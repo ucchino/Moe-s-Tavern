@@ -15,8 +15,8 @@ export function amendPlanStepTool(_state: StateManager): ToolDefinition {
     inputSchema: {
       type: 'object',
       properties: {
-        taskId: { type: 'string' },
-        stepId: { type: 'string' },
+        taskId: { type: 'string', description: 'The task whose plan is amended' },
+        stepId: { type: 'string', description: 'The existing plan step to amend' },
         description: { type: 'string', description: 'Full replacement instructions for the step (not a delta)' },
         reason: { type: 'string', description: 'Why the step is being amended; surfaced to the assigned worker' },
         workerId: { type: 'string', description: 'Caller worker ID (auto-injected by proxy)' }

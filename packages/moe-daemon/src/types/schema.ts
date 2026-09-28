@@ -81,6 +81,26 @@ export interface TaskSizingSettings {
   autoCritique?: boolean;
 }
 
+/** Per-task launch tier, ordered light < standard < heavy (see util/routing.ts). */
+export type TaskTier = 'light' | 'standard' | 'heavy';
+
+export interface TierLaunch {
+  model?: string;
+  effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+}
+
+/**
+ * settings.routing: maps a task's tier to the model/effort the wrapper
+ * launches its CLI with. Unset tiers default to effort medium/high/max and
+ * no model (the wrapper keeps its role default model).
+ */
+export interface RoutingSettings {
+  enabled?: boolean; // default: true
+  light?: TierLaunch;
+  standard?: TierLaunch;
+  heavy?: TierLaunch;
+}
+
 /**
  * How the agent wrapper attributes dirty paths the task never declared
  * (neither a completed step's modifiedFiles/affectedFiles, task.filesModified,
@@ -122,6 +142,8 @@ export interface ProjectSettings {
   chatMaxAgentHops?: number;          // default: 4 (loop guard threshold)
   /** Plan-size warn/reject thresholds for moe.submit_plan; see TaskSizingSettings. */
   taskSizing?: TaskSizingSettings;
+  /** Per-tier model/effort for the wrapper's CLI launch; see RoutingSettings. */
+  routing?: RoutingSettings;
   /**
    * DEPRECATED and ignored. Seeded the removed task time-budget feature.
    * Still accepted so existing project.json files that set it keep loading.
@@ -685,6 +707,11 @@ export interface Task {
    * same rejection). Defaults to MAX_REOPENS_DEFAULT (3).
    */
   maxReopens?: number;
+  /**
+   * Launch tier set at submit_plan (architect choice, floored by plan size)
+   * and bumped one step by each qa_reject. Drives the claim `launch` hint.
+   */
+  tier?: TaskTier;
   /**
    * Snapshot of the prior implementation attempt — populated by
    * `moe.request_replan` when work is shipped back to PLANNING.

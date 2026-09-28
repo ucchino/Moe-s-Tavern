@@ -15,7 +15,7 @@ export function acquireResourceTool(_state: StateManager): ToolDefinition {
       properties: {
         resourceId: { type: 'string', description: 'Resource name, e.g. "benchmark-box". Undeclared ids are auto-created (capacity 1, 24h max lease).' },
         taskId: { type: 'string', description: 'Task the lease belongs to. Leases are task-keyed so they survive CLI restarts.' },
-        workerId: { type: 'string' },
+        workerId: { type: 'string', description: 'Caller worker ID (auto-injected by proxy)' },
         note: { type: 'string', description: 'What you will run — shown to queued agents and list_resources.' },
         etaMs: { type: 'number', description: 'Your own wall-clock estimate in ms (informational).' }
       },

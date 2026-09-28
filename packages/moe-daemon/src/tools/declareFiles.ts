@@ -14,7 +14,7 @@ export function declareFilesTool(_state: StateManager): ToolDefinition {
     inputSchema: {
       type: 'object',
       properties: {
-        taskId: { type: 'string' },
+        taskId: { type: 'string', description: 'The task the declared files belong to' },
         paths: { type: 'array', items: { type: 'string' }, description: 'Project-relative paths (forward slashes; no absolute paths or ..).' },
         workerId: { type: 'string', description: 'Caller worker ID (auto-injected by proxy)' },
         note: { type: 'string', description: 'Why these paths belong to the task (kept in the activity log and task channel).' }

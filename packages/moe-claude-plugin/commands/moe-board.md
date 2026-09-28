@@ -11,7 +11,7 @@ Show a compact snapshot of the Moe task board.
 
 1. Call `moe.list_tasks` once with `{ limit: 500 }` (no status filter) to fetch all tasks.
 
-2. Group tasks by status into five columns: `BACKLOG`, `PLANNING`, `WORKING`, `REVIEW`, `DONE`. Ignore other statuses (`AWAITING_APPROVAL` rolls into `PLANNING`, `ARCHIVED` is skipped).
+2. Group tasks by status into five columns: `BACKLOG`, `PLANNING`, `WORKING`, `REVIEW`, `DONE`. `AWAITING_APPROVAL` rolls into `PLANNING`, `BLOCKED` rolls into `WORKING` (mark it `[B]`), and `ARCHIVED` is skipped.
 
 3. Sort each column by `order` ascending then `priority` descending. Keep at most 5 tasks per column.
 

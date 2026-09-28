@@ -38,7 +38,7 @@ export function getCommitScopeTool(_state: StateManager): ToolDefinition {
     inputSchema: {
       type: 'object',
       properties: {
-        taskId: { type: 'string' },
+        taskId: { type: 'string', description: 'The task whose commit scope to compute' },
         workerId: { type: 'string', description: 'Caller worker id (auto-injected by proxy). Excluded from livePeerIds; counted in activePeerIds when it is not the assignee.' },
         sessionId: { type: 'string', description: '<workerId>@<preflight-iso> of the calling wrapper session (informational).' },
         phase: { type: 'string', enum: [...PHASES], description: 'preflight (baseline merge) or postflight (landing).' },

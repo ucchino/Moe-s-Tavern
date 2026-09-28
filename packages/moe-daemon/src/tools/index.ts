@@ -3,6 +3,7 @@
 // =============================================================================
 
 import type { StateManager } from '../state/StateManager.js';
+import type { TeamRole } from '../types/schema.js';
 import { getContextTool } from './getContext.js';
 import { submitPlanTool } from './submitPlan.js';
 import { checkApprovalTool } from './checkApproval.js';
@@ -163,4 +164,95 @@ export function getTools(state: StateManager): ToolDefinition[] {
     declareFilesTool(state),
     setTaskDependenciesTool(state),
   ];
+}
+
+type Seat = Exclude<TeamRole, 'governor'>;
+const A: Seat = 'architect', W: Seat = 'worker', Q: Seat = 'qa';
+const ALL: readonly Seat[] = [A, W, Q];
+
+/**
+ * Who sees each tool in tools/list. A role sees a tool when its role doc,
+ * .reference.md, a skill it loads, the launcher prompt or a nextAction aimed at
+ * it names the tool; when unsure it is included. The governor sees every
+ * agent-facing tool; 'wrapper' tools are called only by the launcher scripts
+ * (via tools/call, which is never filtered). A tool missing here is visible to all.
+ */
+export const TOOL_AUDIENCE: Readonly<Record<string, readonly Seat[] | 'wrapper'>> = {
+  'moe.get_context': ALL,
+  'moe.submit_plan': [A, W],
+  'moe.check_approval': [A, W],
+  'moe.start_step': [W],
+  'moe.complete_step': [W],
+  'moe.complete_task': [W],
+  'moe.report_blocked': ALL,
+  'moe.request_replan': ALL,
+  'moe.propose_rail': [A, W],
+  'moe.list_tasks': ALL,
+  'moe.get_next_task': [A],
+  'moe.create_task': ALL,
+  'moe.create_epic': [A],
+  'moe.update_epic': [A],
+  'moe.delete_epic': [A],
+  'moe.search_tasks': ALL,
+  'moe.set_task_status': [A],
+  'moe.archive_task': [A],
+  'moe.archive_epic': [A],
+  'moe.claim_next_task': ALL,
+  'moe.finalize_attempt': [],
+  'moe.reattach_attempt': 'wrapper',
+  'moe.delete_task': [A],
+  'moe.qa_approve': [Q],
+  'moe.qa_reject': [Q],
+  'moe.init_project': [],
+  'moe.unblock_worker': [],
+  'moe.release_task': [],
+  'moe.enter_governance': [],
+  'moe.list_workers': ALL,
+  'moe.create_team': [],
+  'moe.join_team': [],
+  'moe.leave_team': [],
+  'moe.list_teams': [],
+  'moe.wait_for_task': ALL,
+  'moe.add_comment': ALL,
+  'moe.get_pending_questions': ALL,
+  'moe.chat_send': ALL,
+  'moe.chat_read': ALL,
+  'moe.chat_channels': ALL,
+  'moe.chat_join': ALL,
+  'moe.chat_wait': ALL,
+  'moe.chat_who': ALL,
+  'moe.chat_resync': ALL,
+  'moe.chat_pin': [],
+  'moe.chat_unpin': [],
+  'moe.chat_decision': ALL,
+  'moe.chat_create_channel': [A],
+  'moe.get_handoff_history': ALL,
+  'moe.list_metrics': [],
+  'moe.get_activity_log': [A],
+  'moe.submit_plan_critique': [],
+  'moe.amend_plan_step': [A],
+  'moe.deregister_worker': 'wrapper',
+  'moe.heartbeat': 'wrapper',
+  'moe.acquire_resource': [W, Q],
+  'moe.release_resource': [W, Q],
+  'moe.list_resources': [W, Q],
+  'moe.wait_for_resource': [W, Q],
+  'moe.get_commit_scope': 'wrapper',
+  'moe.record_commit': [W, Q],
+  'moe.record_candidate': 'wrapper',
+  'moe.record_check_run': [W, Q],
+  'moe.record_delivery_receipt': 'wrapper',
+  'moe.declare_files': [W],
+  'moe.set_task_dependencies': [A],
+};
+
+/** The tools/list a caller of this role should see. No role (IDE, moe-call.sh, humans) → every tool. */
+export function toolsForRole<T extends { name: string }>(tools: readonly T[], role: TeamRole | null | undefined): T[] {
+  if (!role) return [...tools];
+  return tools.filter((tool) => {
+    const audience = TOOL_AUDIENCE[tool.name];
+    if (audience === undefined) return true;
+    if (audience === 'wrapper') return false;
+    return role === 'governor' || audience.includes(role);
+  });
 }

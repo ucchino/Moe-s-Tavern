@@ -8,6 +8,7 @@ import { assertWorkerOwns } from '../util/enforcement.js';
 import { normalizeAffectedFiles, findMissingPaths, pathKey } from '../util/affectedFiles.js';
 import { cachedPlanRef, findCachedPlanPaths, type CachedPlanPaths } from '../util/cachedPlanPaths.js';
 import { assessPlanSize } from '../util/planSize.js';
+import { isTier, maxTier, planSizeFloor } from '../util/routing.js';
 
 /** Upper bound on a single plan step's description — a guard against runaway payloads, not a style limit. */
 export const MAX_STEP_DESCRIPTION_CHARS = 10000;
@@ -110,13 +111,14 @@ export function submitPlanTool(_state: StateManager): ToolDefinition {
     // Git fallback runs outside the fleet mutex; each validation/write attempt
     // below takes the mutex and revalidates current ownership/status/rails.
     blocking: true,
-    description: 'Submit an implementation plan for a task',
+    description: 'Architect: submit the implementation plan for a PLANNING task and free your seat. CONTROL mode moves the task to AWAITING_APPROVAL for a human, SPEED auto-approves after a short delay, TURBO moves it straight to WORKING (moe.check_approval reports the state). Each step is one ordered unit the worker runs with start_step/complete_step. affectedFiles must already exist under the project root (or the cached origin ref), relative to the project root; put files the step creates in newFiles. Size limits (settings.taskSizing): warns past 8 steps or 5 distinct files, rejects past 12 steps or 10 files — split the task instead.',
     inputSchema: {
       type: 'object',
       properties: {
-        taskId: { type: 'string' },
+        taskId: { type: 'string', description: 'The PLANNING task this plan is for' },
         steps: {
           type: 'array',
+          description: 'Ordered implementation steps; each has a description and the files it edits (affectedFiles) or creates (newFiles)',
           items: {
             type: 'object',
             properties: {
@@ -133,6 +135,11 @@ export function submitPlanTool(_state: StateManager): ToolDefinition {
           }
         },
         workerId: { type: 'string' },
+        tier: {
+          type: 'string',
+          enum: ['light', 'standard', 'heavy'],
+          description: 'How much model/effort the worker and QA sessions get. light = a mechanical, one-concern change; standard = normal work; heavy = cross-cutting or subtle. Omit to let the daemon pick from plan size; the daemon never goes below the plan-size tier.'
+        },
         planningNotes: {
           type: 'object',
           description: 'Architect reasoning notes for the worker (approaches considered, codebase insights, risks, key files)',
@@ -155,6 +162,7 @@ export function submitPlanTool(_state: StateManager): ToolDefinition {
         const params = args as {
           taskId: string;
           workerId?: string;
+          tier?: unknown;
           steps: { description: string; affectedFiles?: string[]; newFiles?: string[] }[];
           planningNotes?: {
             approachesConsidered?: string;
@@ -360,8 +368,14 @@ export function submitPlanTool(_state: StateManager): ToolDefinition {
           plannedDistinctFileCount: planSize.distinctFileCount,
         };
 
+        // Launch tier: architect's pick, never below the plan-size floor, and
+        // never below a tier a qa_reject escalation already raised (re-plan).
+        const floor = planSizeFloor(normalizedSteps, project.settings);
+        const tier = maxTier(maxTier(isTier(params.tier) ? params.tier : floor, floor), task.tier);
+
         const updatePayload: Record<string, unknown> = {
           implementationPlan,
+          tier,
           // Persist warn-zone size warnings so boards/governors see size pressure
           // without reading chat; a compliant resubmit clears them.
           planSizeWarnings: planSize.warnings.length > 0 ? planSize.warnings : undefined,
@@ -540,6 +554,7 @@ export function submitPlanTool(_state: StateManager): ToolDefinition {
           planRevision: submitted.planRevision,
           distinctFileCount: planSize.distinctFileCount,
           newFileCount: exemptKeys.size,
+          tier,
           ...(pathValidation ? { pathValidation } : {}),
           ...(planSize.warnings.length > 0 ? { warnings: planSize.warnings } : {}),
           message,

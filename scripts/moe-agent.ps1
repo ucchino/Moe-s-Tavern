@@ -661,7 +661,7 @@ if ($projConfig -and $projConfig.settings.PSObject.Properties['enableAgentTeams'
 # Resolve the Claude model for this role.
 # Precedence: -Model flag → .moe/project.json settings.models.<role> → per-role default.
 # Worker and qa default to Opus 5.5, architect and governor to Opus 5, launched
-# with --effort max below. Override
+# with --effort max below unless the claimed task carries a launch tier. Override
 # per role via project.json settings.models.{role}.
 $defaultModels = @{
     architect = "claude-opus-5"
@@ -676,6 +676,8 @@ if (-not [string]::IsNullOrWhiteSpace($Model)) {
     $configured = $projConfig.settings.models.$Role
     if ($configured) { $resolvedModel = [string]$configured }
 }
+# The operator-pinned model (flag or settings.models.<role>); a task's launch tier never overrides it.
+$explicitModel = $resolvedModel
 if ([string]::IsNullOrWhiteSpace($resolvedModel)) {
     $resolvedModel = $defaultModels[$Role]
 }
@@ -750,8 +752,8 @@ function Start-MoeUsageReceipt([string]$Provider, [string]$LaunchMode) {
     if ($env:MOE_USAGE_REPORTING -eq 'off' -or $Provider -notin @('claude', 'codex')) { return }
     $savedExitCode = $global:LASTEXITCODE
     try {
-        $requestedModel = if ($Provider -eq 'claude') { $resolvedModel } else { $null }
-        $requestedEffort = if ($Provider -eq 'claude') { 'max' } elseif ($env:MOE_CODEX_REASONING_EFFORT) { $env:MOE_CODEX_REASONING_EFFORT } else { 'xhigh' }
+        $requestedModel = if ($Provider -eq 'claude') { if ($iterModel) { $iterModel } else { $resolvedModel } } else { $null }
+        $requestedEffort = if ($Provider -eq 'claude') { if ($iterEffort) { $iterEffort } else { 'max' } } elseif ($env:MOE_CODEX_REASONING_EFFORT) { $env:MOE_CODEX_REASONING_EFFORT } else { 'xhigh' }
         $env:MOE_USAGE_CONTEXT_JSON = @{ taskId=$preflightTaskId; workerId=$WorkerId; role=$Role
             attemptId=$script:MoeAttemptId; requestedModel=$requestedModel; requestedEffort=$requestedEffort
             launchMode=$LaunchMode } | ConvertTo-Json -Compress
@@ -5084,6 +5086,8 @@ do {
     $script:MoeAttemptId = ""; $script:MoeAttemptGeneration = $null
     $script:MoeRunnerId = "runner-" + [guid]::NewGuid().ToString("N")
     $preflightTaskId = ""
+    # Per-task launch hint from claim_next_task (reset so a tier never leaks into the next task).
+    $taskLaunchTier = ""; $taskLaunchModel = ""; $taskLaunchEffort = ""
     $preflightHeldTaskId = ""
     $preflightTaskTitle = ""
     $preflightTaskChannel = ""
@@ -5368,6 +5372,18 @@ do {
                 }
 
                 Set-MoeAttemptIdentity $claim $preflightTaskId
+
+                # Per-task tier: claim_next_task (claim or alreadyAssigned resume)
+                # may carry launch {tier, effort, model}. Unknown effort values and
+                # odd model strings are dropped, leaving the seat defaults.
+                if ($claim.PSObject.Properties['launch'] -and $claim.launch) {
+                    $launch = $claim.launch
+                    if ($launch.PSObject.Properties['tier'] -and [string]$launch.tier -in @('light', 'standard', 'heavy')) {
+                        $taskLaunchTier = [string]$launch.tier
+                        if ($launch.PSObject.Properties['effort'] -and [string]$launch.effort -in @('low', 'medium', 'high', 'xhigh', 'max')) { $taskLaunchEffort = [string]$launch.effort }
+                        if ($launch.PSObject.Properties['model'] -and [string]$launch.model -match '^[A-Za-z0-9._:/@-]{1,128}$') { $taskLaunchModel = [string]$launch.model }
+                    }
+                }
                 if ($preflightTaskId) {
                     $preflightContext = Invoke-MoeRpc -Tool "get_context" -Args @{ taskId = $preflightTaskId }
                 }
@@ -5653,9 +5669,9 @@ Your FIRST action is to read the backlog, then enter the moe.chat_wait loop with
         $dynamicContext += @"
 # Pre-flight Complete: no claimable task
 The daemon reports no claimable task for role $Role right now.
-Your FIRST action MUST be moe.wait_for_task with statuses=$(ConvertTo-Json @($statuses) -Compress), workerId=$WorkerId.
+Start with moe.wait_for_task with statuses=$(ConvertTo-Json @($statuses) -Compress), workerId=$WorkerId.
 When it returns hasNext:true, call moe.claim_next_task, then moe.get_context.
-If moe.wait_for_task returns hasChatMessage:true, your NEXT calls MUST be moe.chat_read on chatMessage.channel, then moe.chat_send with your reply, THEN moe.wait_for_task again. Do not claim a new task while a routed mention is unanswered.
+If moe.wait_for_task returns hasChatMessage:true, call moe.chat_read on chatMessage.channel and reply with moe.chat_send before calling moe.wait_for_task again. Do not claim a new task while a routed mention is unanswered.
 "@
     }
 
@@ -5834,7 +5850,7 @@ $mentionsJson
     # too), matching the sh twin's GROK_INTERACTIVE gate.
     $oneShotSession = if ($cliType -eq 'grok') { -not $grokInteractive } else { -not $Interactive }
     if ($claimPromptBody -and $oneShotSession -and $Role -ne 'governor' -and -not $notificationPrompt) {
-        $claimPromptBody += " CRITICAL (one-shot session): this CLI process exits the moment you end your turn, and any background jobs/builds/tests die with it — a completion notification can NEVER arrive after you stop. Never end your turn to 'wait for' a background task: run it in the foreground or poll it to completion first. End your turn only after your terminal moe.* call for this task (submit_plan / complete_task / qa_approve / qa_reject / report_blocked) has succeeded."
+        $claimPromptBody += " One-shot session: this CLI process exits when you end your turn, and any background jobs/builds/tests die with it, so a completion notification cannot arrive after you stop. Never end your turn to 'wait for' a background task: run it in the foreground or poll it to completion first. End your turn only after your terminal moe.* call for this task (submit_plan / complete_task / qa_approve / qa_reject / report_blocked) has succeeded."
     } elseif ($cliType -in @('claude', 'grok') -and $AutoClaim -and $preflightOk -and $claimPromptBody -and $Role -ne 'governor' -and -not $notificationPrompt) {
         # An interactive TUI stays open after the agent stops, and the wrapper
         # claims the next task only once the CLI exits: without this line the
@@ -6304,8 +6320,17 @@ $mentionsJson
             Write-Host "[prompt-size:detail] role=$Role workerId=$WorkerId taskId=$preflightTaskId" -ForegroundColor DarkCyan
         }
 
+        # Per-task tier (launch hint) overrides the seat default model unless the
+        # operator pinned one (-Model / settings.models.<role>); effort defaults to max.
+        $iterModel = $resolvedModel
+        if (-not $explicitModel -and $taskLaunchModel) { $iterModel = $taskLaunchModel }
+        $iterEffort = if ($taskLaunchEffort) { $taskLaunchEffort } else { 'max' }
+        if ($taskLaunchTier) {
+            $iterModelLabel = if ($iterModel) { $iterModel } else { 'default' }
+            Write-Host "[OK] Task tier: $taskLaunchTier (model $iterModelLabel, effort $iterEffort)" -ForegroundColor Green
+        }
         $modelArgs = @()
-        if ($resolvedModel) { $modelArgs = @("--model", $resolvedModel) }
+        if ($iterModel) { $modelArgs = @("--model", $iterModel) }
 
         # The taskless launch decision is taken ONCE for every CLI type before
         # this dispatch ($moeSkipLaunch), so this branch only runs when a CLI
@@ -6494,7 +6519,7 @@ $mentionsJson
             Start-HeartbeatSidecar -ProxyScript $proxyScript -ProjectPath $projectPath -WorkerId $WorkerId | Out-Null
             try {
             if ($userPromptForCli) {
-                Write-Host "Command: $Command $($modelArgs -join ' ') --mcp-config `"$mcpConfigFile`" --append-system-prompt-file `"$systemPromptFile`" $($cacheArgs -join ' ') --effort max $($printArgs -join ' ') `"<prompt>`""
+                Write-Host "Command: $Command $($modelArgs -join ' ') --mcp-config `"$mcpConfigFile`" --append-system-prompt-file `"$systemPromptFile`" $($cacheArgs -join ' ') --effort $iterEffort $($printArgs -join ' ') `"<prompt>`""
                 if ($usePrintMode) {
                     # Stream output through the parser. ForEach-Object processes
                     # lines as they arrive (no buffering), so the user sees
@@ -6503,23 +6528,23 @@ $mentionsJson
                     $script:moeToolName = $null
                     $script:moeInText = $false
                     & {
-                        & $Command @CommandArgs @modelArgs --mcp-config "$mcpConfigFile" --append-system-prompt-file "$systemPromptFile" @cacheArgs --effort max @printArgs "$userPromptForCli" 2>&1
+                        & $Command @CommandArgs @modelArgs --mcp-config "$mcpConfigFile" --append-system-prompt-file "$systemPromptFile" @cacheArgs --effort $iterEffort @printArgs "$userPromptForCli" 2>&1
                         $script:CliExitCode = $LASTEXITCODE
                     } | ForEach-Object { & $parseStreamJson $_ }
                 } else {
-                    & $Command @CommandArgs @modelArgs --mcp-config "$mcpConfigFile" --append-system-prompt-file "$systemPromptFile" @cacheArgs --effort max @printArgs "$userPromptForCli"
+                    & $Command @CommandArgs @modelArgs --mcp-config "$mcpConfigFile" --append-system-prompt-file "$systemPromptFile" @cacheArgs --effort $iterEffort @printArgs "$userPromptForCli"
                     $script:CliExitCode = $LASTEXITCODE
                 }
             } else {
-                Write-Host "Command: $Command $($modelArgs -join ' ') --mcp-config `"$mcpConfigFile`" --append-system-prompt-file `"$systemPromptFile`" $($cacheArgs -join ' ') --effort max $($printArgs -join ' ')"
+                Write-Host "Command: $Command $($modelArgs -join ' ') --mcp-config `"$mcpConfigFile`" --append-system-prompt-file `"$systemPromptFile`" $($cacheArgs -join ' ') --effort $iterEffort $($printArgs -join ' ')"
                 if ($usePrintMode) {
                     $script:moeToolJson = ""
                     & {
-                        & $Command @CommandArgs @modelArgs --mcp-config "$mcpConfigFile" --append-system-prompt-file "$systemPromptFile" @cacheArgs --effort max @printArgs 2>&1
+                        & $Command @CommandArgs @modelArgs --mcp-config "$mcpConfigFile" --append-system-prompt-file "$systemPromptFile" @cacheArgs --effort $iterEffort @printArgs 2>&1
                         $script:CliExitCode = $LASTEXITCODE
                     } | ForEach-Object { & $parseStreamJson $_ }
                 } else {
-                    & $Command @CommandArgs @modelArgs --mcp-config "$mcpConfigFile" --append-system-prompt-file "$systemPromptFile" @cacheArgs --effort max @printArgs
+                    & $Command @CommandArgs @modelArgs --mcp-config "$mcpConfigFile" --append-system-prompt-file "$systemPromptFile" @cacheArgs --effort $iterEffort @printArgs
                     $script:CliExitCode = $LASTEXITCODE
                 }
             }

@@ -47,6 +47,8 @@ metadata:
 
 Modern C++ (C++11 and beyond) patterns including RAII, smart pointers, templates, and STL.
 
+A modern-CMake project template ships with this skill at `templates/CMakeLists.txt` (usage in `templates/README.md`); start new C++ projects from it.
+
 ---
 
 ## Modern C++ Fundamentals
@@ -638,5 +640,3 @@ void variant_usage() {
 ## Related Skills
 
 - [[system-design]] - Systems programming
-- [[performance-optimization]] - Low-level optimization
-- [[desktop-apps]] - Native applications

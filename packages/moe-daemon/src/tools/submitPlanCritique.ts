@@ -15,14 +15,14 @@ export function submitPlanCritiqueTool(_state: StateManager): ToolDefinition {
     inputSchema: {
       type: 'object',
       properties: {
-        taskId: { type: 'string' },
-        verdict: { type: 'string', enum: ['pass', 'block'] },
+        taskId: { type: 'string', description: 'The task whose submitted plan is critiqued' },
+        verdict: { type: 'string', enum: ['pass', 'block'], description: 'pass is informational; block flips the task back to PLANNING' },
         category: {
           type: 'string',
           enum: [...PLAN_CRITIQUE_CATEGORIES],
           description: 'What kind of problem a "block" names (size|correctness|rails|dependency) — makes blocks countable. A block without one is counted as "uncategorized" and warned about.'
         },
-        concerns: { type: 'array', items: { type: 'string' } },
+        concerns: { type: 'array', items: { type: 'string' }, description: 'Specific problems with the plan, posted to #architects on block' },
         workerId: { type: 'string', description: 'Caller worker ID (auto-injected by proxy)' }
       },
       required: ['taskId', 'verdict'],

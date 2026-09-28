@@ -321,7 +321,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --grok-exec              Use grok headless mode (non-interactive, --prompt-file --yolo)"
             echo "  --interactive            Force Claude into interactive TUI (default: on for architect/governor)"
             echo "  --no-interactive         Force one-shot --print mode (default for worker/qa; fresh CLI per task)"
-            echo "  --model MODEL            Claude model override (default: all roles = opus-5)"
+            echo "  --model MODEL            Claude model override (default: worker/qa = claude-opus-5-5, architect/governor = claude-opus-5)"
             echo "  --help, -h               Show this help"
             echo ""
             echo "Examples:"
@@ -649,7 +649,7 @@ start_moe_usage_receipt() {
     [ "${MOE_USAGE_REPORTING:-}" != off ] || return 0
     local provider="$1" mode="$2" requested_model="" requested_effort="" prepared="" receipt_file="" receipt_context=""
     case "$provider" in
-        claude) requested_model="${RESOLVED_MODEL:-}"; requested_effort=max ;;
+        claude) requested_model="${ITER_MODEL:-${RESOLVED_MODEL:-}}"; requested_effort="${ITER_EFFORT:-max}" ;;
         codex) requested_effort="${MOE_CODEX_REASONING_EFFORT:-xhigh}" ;;
         *) return 0 ;;
     esac
@@ -1826,7 +1826,8 @@ EXPLICIT_MODEL="$RESOLVED_MODEL"
 if [ -z "$RESOLVED_MODEL" ]; then
     # Worker and qa default to Opus 5.5, architect and governor to Opus 5 --
     # matches moe-agent.ps1. Launched with
-    # --effort max below. Override per role via project.json settings.models.{role}.
+    # --effort max below unless the claimed task carries a launch tier.
+    # Override per role via project.json settings.models.{role}.
     case "$ROLE" in
         architect) RESOLVED_MODEL="claude-opus-5" ;;
         worker)    RESOLVED_MODEL="claude-opus-5-5" ;;
@@ -5623,6 +5624,8 @@ while [ "$LOOP_RUNNING" = true ]; do
     PREFLIGHT_OK=false
     PREFLIGHT_IS_RESUME=false
     PREFLIGHT_ROUTED_MENTIONS_JSON=""
+    # Per-task launch hint from claim_next_task (reset so a tier never leaks into the next task).
+    TASK_LAUNCH_TIER=""; TASK_LAUNCH_MODEL=""; TASK_LAUNCH_EFFORT=""
     PREFLIGHT_ROUTED_MENTIONS_COUNT=0
     # Taskless-launch state. A CLI that can edit code is only ever launched
     # with a task already bound, so these record WHY a taskless iteration
@@ -5984,6 +5987,26 @@ except Exception:
                 fi
 
                 pin_attempt_identity || echo "[WARN] Missing/stale attempt identity; candidate completion will fail closed."
+
+                # Per-task tier: claim_next_task (claim or alreadyAssigned resume)
+                # may carry launch {tier, effort, model}. Unknown effort values and
+                # odd model strings are dropped, leaving the seat defaults.
+                PARSED_LAUNCH=$($PYTHON_CMD -c "
+import json, re, sys
+try:
+    l = json.loads(sys.stdin.read()).get('launch') or {}
+    t = l.get('tier') if l.get('tier') in ('light', 'standard', 'heavy') else ''
+    e = l.get('effort') if l.get('effort') in ('low', 'medium', 'high', 'xhigh', 'max') else ''
+    m = l.get('model') if isinstance(l.get('model'), str) and re.fullmatch(r'[A-Za-z0-9._:/@-]{1,128}', l.get('model')) else ''
+    if t:
+        sys.stdout.write(t + '\x1f' + m + '\x1f' + e)
+except Exception:
+    pass
+" <<< "$CLAIM_RESULT" 2>/dev/null || echo "")
+                if [ -n "$PARSED_LAUNCH" ]; then
+                    IFS=$'\x1f' read -r TASK_LAUNCH_TIER TASK_LAUNCH_MODEL TASK_LAUNCH_EFFORT <<< "$PARSED_LAUNCH" || true
+                    TASK_LAUNCH_MODEL="${TASK_LAUNCH_MODEL:-}"; TASK_LAUNCH_EFFORT="${TASK_LAUNCH_EFFORT:-}"
+                fi
 
                 # 5. Fetch context for the claimed task
                 if [ -n "$PREFLIGHT_TASK_ID" ]; then
@@ -6527,9 +6550,9 @@ Your FIRST action is to read the backlog, then enter the moe.chat_wait loop with
     elif [ "$PREFLIGHT_NO_TASK" = true ]; then
         DYNAMIC_CONTEXT="# Pre-flight Complete: no claimable task
 The daemon reports no claimable task for role $ROLE right now.
-Your FIRST action MUST be moe.wait_for_task with statuses=$STATUSES, workerId=$WORKER_ID.
+Start with moe.wait_for_task with statuses=$STATUSES, workerId=$WORKER_ID.
 When it returns hasNext:true, call moe.claim_next_task, then moe.get_context.
-If moe.wait_for_task returns hasChatMessage:true, your NEXT calls MUST be moe.chat_read on chatMessage.channel, then moe.chat_send with your reply, THEN moe.wait_for_task again. Do not claim a new task while a routed mention is unanswered.
+If moe.wait_for_task returns hasChatMessage:true, call moe.chat_read on chatMessage.channel and reply with moe.chat_send before calling moe.wait_for_task again. Do not claim a new task while a routed mention is unanswered.
 If hasPendingQuestion:true, call moe.get_pending_questions and answer with moe.add_comment."
     fi
     DYNAMIC_CONTEXT="$SESSION_SETTINGS
@@ -6596,8 +6619,6 @@ $PREFLIGHT_ROUTED_MENTIONS_JSON
             PROMPT_BODY="You are in governance mode. Read the backlog: moe.chat_channels, find #governors, moe.chat_read it (last 50 messages), then moe.chat_read #general. After catching up, enter the loop: moe.chat_wait with channels=['#governors','#general'] and a long timeout. When it wakes, triage per docs/roles/governor.md (the role doc is appended to your system prompt). Reply via moe.chat_send. Use moe.set_task_status, moe.release_task, moe.propose_rail, or moe.submit_plan_critique when the signal calls for action. On stale-worker alerts: quiet is not dead (long builds/tests are silent) — ping the worker first and NEVER call moe.release_task on idle time alone; release needs a confirmed crash plus the human's nod. Loop forever. Do NOT call moe.claim_next_task."
         elif [ -n "$NOTIFICATION_PROMPT" ]; then
             PROMPT_BODY="$NOTIFICATION_PROMPT"
-        elif [ "$PREFLIGHT_NO_TASK" = true ]; then
-            PROMPT_BODY="No claimable task right now. Call moe.wait_for_task with statuses=$STATUSES, workerId=\"$WORKER_ID\". When it wakes with hasNext:true, call moe.claim_next_task with the same args, then moe.get_context. If it wakes with hasChatMessage:true, your next calls MUST be moe.chat_read on chatMessage.channel, then moe.chat_send with your reply, THEN moe.wait_for_task again. If it wakes with hasPendingQuestion:true, call moe.chat_read on that task's channel and answer the question. Do not claim a new task while a routed mention is unanswered."
         else
             # Pre-flight was skipped or failed -- fall back to the legacy multi-step prompt
             PROMPT_BODY="First call moe.chat_channels to find #general, then moe.chat_join and moe.chat_send to announce yourself as $ROLE. Then call moe.chat_read to catch up on any unread messages from other agents or human. Then call moe.get_pending_questions to check for unanswered questions. Answer any you find using moe.add_comment. Then use the MCP tool moe.claim_next_task with args $CLAIM_JSON. Do NOT read .moe/ files directly - only use moe.* MCP tools. If hasNext is false, call moe.wait_for_task with the same statuses and workerId. When it returns hasNext:true, call moe.claim_next_task again. If it returns hasChatMessage:true, call moe.chat_read to read and respond, then call moe.wait_for_task again. If it returns hasPendingQuestion:true, call moe.get_pending_questions, answer them with moe.add_comment, then call moe.wait_for_task again. If it returns timedOut:true, call moe.wait_for_task again. After claiming a task and calling moe.get_context, use Serena list_memories / read_memory to pick up prior knowledge for this task/area. Before calling moe.wait_for_task, use Serena write_memory to record a 'task-<id>-handoff' note (and any gotcha-<area> learnings) so the next agent benefits. Keep waiting until you get a task."
@@ -6616,7 +6637,7 @@ $PREFLIGHT_ROUTED_MENTIONS_JSON
     # stop task (and governors default to interactive anyway). Headless grok
     # (--prompt-file --yolo) is the same one-shot shape and gets it too.
     if { { [ "$CLI_TYPE" = "claude" ] && [ "$CLAUDE_INTERACTIVE" = false ]; } || { [ "$CLI_TYPE" = grok ] && [ "$GROK_INTERACTIVE" = false ]; }; } && [ "$ROLE" != "governor" ] && [ -n "$PROMPT_BODY" ] && [ -z "$NOTIFICATION_PROMPT" ]; then
-        PROMPT_BODY="$PROMPT_BODY CRITICAL (one-shot session): this CLI process exits the moment you end your turn, and any background jobs/builds/tests die with it — a completion notification can NEVER arrive after you stop. Run verification in the foreground or poll it to completion. Do NOT call moe.wait_for_task at the end of the task: end your turn once your terminal moe.* call for this task (submit_plan / complete_task / qa_approve / qa_reject / report_blocked) has succeeded — the wrapper respawns a fresh session for the next task."
+        PROMPT_BODY="$PROMPT_BODY One-shot session: this CLI process exits when you end your turn, and any background jobs/builds/tests die with it, so a completion notification cannot arrive after you stop. Run verification in the foreground or poll it to completion. Do not call moe.wait_for_task at the end of the task: end your turn once your terminal moe.* call for this task (submit_plan / complete_task / qa_approve / qa_reject / report_blocked) has succeeded — the wrapper respawns a fresh session for the next task."
     elif { [ "$CLI_TYPE" = claude ] || [ "$CLI_TYPE" = grok ]; } && [ "$AUTO_CLAIM" = true ] && [ "$PREFLIGHT_OK" = true ] && [ "$ROLE" != "governor" ] && [ -n "$PROMPT_BODY" ] && [ -z "$NOTIFICATION_PROMPT" ]; then
         # An interactive TUI stays open after the agent stops, and the wrapper
         # claims the next task only once the CLI exits: without this line the
@@ -7067,9 +7088,19 @@ $PROMPT_BODY"
         fi
 
         # Only the `claude` CLI honors --model; codex/gemini pick their own.
+        # Per-task tier (launch hint) overrides the seat default model unless the
+        # operator pinned one (--model / settings.models.<role>); effort defaults to max.
+        ITER_MODEL="$RESOLVED_MODEL"
+        if [ -z "$EXPLICIT_MODEL" ] && [ -n "$TASK_LAUNCH_MODEL" ]; then
+            ITER_MODEL="$TASK_LAUNCH_MODEL"
+        fi
+        ITER_EFFORT="${TASK_LAUNCH_EFFORT:-max}"
+        if [ "$CLI_TYPE" = "claude" ] && [ -n "$TASK_LAUNCH_TIER" ]; then
+            echo -e "${GREEN}[OK]${NC} Task tier: $TASK_LAUNCH_TIER (model ${ITER_MODEL:-default}, effort $ITER_EFFORT)"
+        fi
         MODEL_ARGS=()
-        if [ "$CLI_TYPE" = "claude" ] && [ -n "$RESOLVED_MODEL" ]; then
-            MODEL_ARGS=(--model "$RESOLVED_MODEL")
+        if [ "$CLI_TYPE" = "claude" ] && [ -n "$ITER_MODEL" ]; then
+            MODEL_ARGS=(--model "$ITER_MODEL")
         fi
 
         # Prompt-cache stability. The default Claude Code system prompt bakes
@@ -7361,10 +7392,10 @@ PYEOF
             if [ ${#PRINT_ARGS[@]} -gt 0 ]; then
                 # Pipe through the parser; the subshell's exit (the CLI's) is
                 # PIPESTATUS[0] — the parser's own status is irrelevant.
-                (cd "$PROJECT" && "$COMMAND_BIN" "${COMMAND_ARGV[@]}" "${MODEL_ARGS[@]}" --append-system-prompt-file "$SYSTEM_PROMPT_FILE" "${CACHE_ARGS[@]}" --effort max "${PRINT_ARGS[@]}" "$PROMPT" 2>&1) | "$NODE_CMD" "$PROMPT_CACHE_HELPER" claude-stream | MOE_TOOL_WRITES_FILE="$MOE_TOOL_WRITES_FILE" MOE_GIT_TOP="$MOE_TOP" MOE_GIT_REL="$MOE_REL" MOE_SERENA_PROJECT_ROOT="${SERENA_PROJECT:-$PROJECT}" $PYTHON_CMD -u -c "$STREAM_JSON_PARSER"
+                (cd "$PROJECT" && "$COMMAND_BIN" "${COMMAND_ARGV[@]}" "${MODEL_ARGS[@]}" --append-system-prompt-file "$SYSTEM_PROMPT_FILE" "${CACHE_ARGS[@]}" --effort "$ITER_EFFORT" "${PRINT_ARGS[@]}" "$PROMPT" 2>&1) | "$NODE_CMD" "$PROMPT_CACHE_HELPER" claude-stream | MOE_TOOL_WRITES_FILE="$MOE_TOOL_WRITES_FILE" MOE_GIT_TOP="$MOE_TOP" MOE_GIT_REL="$MOE_REL" MOE_SERENA_PROJECT_ROOT="${SERENA_PROJECT:-$PROJECT}" $PYTHON_CMD -u -c "$STREAM_JSON_PARSER"
                 CLI_EXIT_CODE=${PIPESTATUS[0]}
             else
-                (cd "$PROJECT" && "$COMMAND_BIN" "${COMMAND_ARGV[@]}" "${MODEL_ARGS[@]}" --append-system-prompt-file "$SYSTEM_PROMPT_FILE" "${CACHE_ARGS[@]}" --effort max "$PROMPT")
+                (cd "$PROJECT" && "$COMMAND_BIN" "${COMMAND_ARGV[@]}" "${MODEL_ARGS[@]}" --append-system-prompt-file "$SYSTEM_PROMPT_FILE" "${CACHE_ARGS[@]}" --effort "$ITER_EFFORT" "$PROMPT")
                 CLI_EXIT_CODE=$?
             fi
 
@@ -7374,11 +7405,11 @@ PYEOF
 
             if [ ${#PRINT_ARGS[@]} -gt 0 ]; then
                 start_moe_usage_receipt "$CLI_TYPE" headless
-                (cd "$PROJECT" && "$COMMAND_BIN" "${COMMAND_ARGV[@]}" "${MODEL_ARGS[@]}" --append-system-prompt-file "$SYSTEM_PROMPT_FILE" "${CACHE_ARGS[@]}" --effort max "${PRINT_ARGS[@]}" 2>&1) | "$NODE_CMD" "$PROMPT_CACHE_HELPER" claude-stream | MOE_TOOL_WRITES_FILE="$MOE_TOOL_WRITES_FILE" MOE_GIT_TOP="$MOE_TOP" MOE_GIT_REL="$MOE_REL" MOE_SERENA_PROJECT_ROOT="${SERENA_PROJECT:-$PROJECT}" $PYTHON_CMD -u -c "$STREAM_JSON_PARSER"
+                (cd "$PROJECT" && "$COMMAND_BIN" "${COMMAND_ARGV[@]}" "${MODEL_ARGS[@]}" --append-system-prompt-file "$SYSTEM_PROMPT_FILE" "${CACHE_ARGS[@]}" --effort "$ITER_EFFORT" "${PRINT_ARGS[@]}" 2>&1) | "$NODE_CMD" "$PROMPT_CACHE_HELPER" claude-stream | MOE_TOOL_WRITES_FILE="$MOE_TOOL_WRITES_FILE" MOE_GIT_TOP="$MOE_TOP" MOE_GIT_REL="$MOE_REL" MOE_SERENA_PROJECT_ROOT="${SERENA_PROJECT:-$PROJECT}" $PYTHON_CMD -u -c "$STREAM_JSON_PARSER"
                 CLI_EXIT_CODE=${PIPESTATUS[0]}
             else
                 start_moe_usage_receipt "$CLI_TYPE" interactive
-                (cd "$PROJECT" && "$COMMAND_BIN" "${COMMAND_ARGV[@]}" "${MODEL_ARGS[@]}" --append-system-prompt-file "$SYSTEM_PROMPT_FILE" "${CACHE_ARGS[@]}" --effort max)
+                (cd "$PROJECT" && "$COMMAND_BIN" "${COMMAND_ARGV[@]}" "${MODEL_ARGS[@]}" --append-system-prompt-file "$SYSTEM_PROMPT_FILE" "${CACHE_ARGS[@]}" --effort "$ITER_EFFORT")
                 CLI_EXIT_CODE=$?
             fi
 

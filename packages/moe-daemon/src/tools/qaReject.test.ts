@@ -108,6 +108,40 @@ describe('qa_reject bounded escalation', () => {
     expect(result.exceededReopenCap).toBe(true);
   });
 
+  it('bumps the launch tier one step and the next claim carries it as `launch`', async () => {
+    setupMoe(); writeEpic(); writeTask({ tier: 'light' });
+    await state.load();
+    await qaRejectTool(state).handler({ taskId: 'task-1', reason: 'fix it', workerId: 'qa-a' }, state);
+    expect(state.getTask('task-1')?.tier).toBe('standard');
+
+    await createWorker('w-1', 'IDLE', null);
+    const claim = await claimNextTaskTool(state).handler(
+      { statuses: ['WORKING'], workerId: 'w-1' }, state,
+    ) as { hasNext: boolean; launch?: unknown };
+    expect(claim.hasNext).toBe(true);
+    expect(claim.launch).toEqual({ tier: 'standard', effort: 'high' });
+
+    // A resumed holder gets the same hint on the alreadyAssigned answer.
+    const again = await claimNextTaskTool(state).handler(
+      { statuses: ['WORKING'], workerId: 'w-1', taskId: undefined }, state,
+    ) as { launch?: unknown };
+    expect(again.launch).toEqual({ tier: 'standard', effort: 'high' });
+  });
+
+  it('sets an unset tier from the plan-size floor before bumping; a parked task keeps its tier', async () => {
+    setupMoe(); writeEpic(); writeTask();
+    await state.load();
+    await qaRejectTool(state).handler({ taskId: 'task-1', reason: 'fix it', workerId: 'qa-a' }, state);
+    expect(state.getTask('task-1')?.tier).toBe('standard');
+
+    fs.rmSync(testDir, { recursive: true, force: true });
+    setupMoe(); writeEpic(); writeTask({ id: 'task-1', reopenCount: 3, tier: 'light' });
+    state = new StateManager({ projectPath: testDir });
+    await state.load();
+    await qaRejectTool(state).handler({ taskId: 'task-1', reason: 'still bad', workerId: 'qa-a' }, state);
+    expect(state.getTask('task-1')?.tier).toBe('light');
+  });
+
   it('parks in REVIEW for a human past the hard cap instead of re-flipping to PLANNING', async () => {
     // reopenCount 3 -> 4 > maxReopens (hard cap) → parked in REVIEW, unassigned.
     setupMoe(); writeEpic(); writeTask({ reopenCount: 3, assignedWorkerId: 'qa-a' });

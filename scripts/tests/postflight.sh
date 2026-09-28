@@ -410,7 +410,9 @@ switch (tool) {
       ok({
         hasNext: false,
         alreadyAssigned: { taskId: 'task-resume', title: 'Resume smoke', status: 'REVIEW' },
-        nextAction: { tool: 'moe.get_context', args: { taskId: 'task-resume' }, reason: 'One task per worker: you already hold task-resume (REVIEW).' }
+        nextAction: { tool: 'moe.get_context', args: { taskId: 'task-resume' }, reason: 'One task per worker: you already hold task-resume (REVIEW).' },
+        // FAKE_CLAIM_LAUNCH: the per-task tier hint (claimNextTask.ts launch).
+        ...(process.env.FAKE_CLAIM_LAUNCH ? { launch: JSON.parse(process.env.FAKE_CLAIM_LAUNCH) } : {})
       });
     } else if (process.env.FAKE_CLAIM_MODE === 'blocked') {
       // The BLOCKED hold: the daemon parked this worker's task via
@@ -1438,6 +1440,46 @@ fi
 if ! grep -Fq 'One-shot session:' "$CLI_ARGS_FILE"; then
   cat "$CLI_ARGS_FILE" >&2 || true
   echo "Expected one-shot session warning in the CLI prompt" >&2
+  exit 1
+fi
+# No launch hint on the claim: the seat default effort (max) is used.
+if ! grep -A1 -Fx -- '--effort' "$CLI_ARGS_FILE" | grep -Fqx 'max'; then
+  cat "$CLI_ARGS_FILE" >&2 || true
+  echo "Expected --effort max when the claim carries no launch tier" >&2
+  exit 1
+fi
+
+# --- Per-task tier: a claim carrying launch {tier, effort} launches the CLI
+# with that effort and prints the tier banner. ---
+: > "$CLI_ARGS_FILE"
+set +e
+PATH="$TMP_DIR:$PATH" HOME="$HOME_DIR" MOE_PROXY_PATH="$FAKE_PROXY" FAKE_CLAIM_MODE=resume \
+  FAKE_CLAIM_LAUNCH='{"tier":"light","effort":"medium"}' timeout "${POSTFLIGHT_TIMEOUT_SEC}s" \
+  "$WRAPPER" \
+  --project "$PROJECT_DIR" \
+  --worker-id qa-postflight \
+  --role qa \
+  --team Smoke \
+  --no-start-daemon \
+  --command "$FAKE_CLI" \
+  --loop \
+  --poll-interval 0 \
+  >"$TMP_DIR/wrapper-tier.out" 2>&1
+tier_code=$?
+set -e
+if [ "$tier_code" -ne 0 ]; then
+  cat "$TMP_DIR/wrapper-tier.out" >&2 || true
+  echo "Tier wrapper exited with $tier_code" >&2
+  exit 1
+fi
+if ! grep -A1 -Fx -- '--effort' "$CLI_ARGS_FILE" | grep -Fqx 'medium'; then
+  cat "$CLI_ARGS_FILE" >&2 || true
+  echo "Expected --effort medium from the claim's launch tier" >&2
+  exit 1
+fi
+if ! grep -Fq 'Task tier: light (model' "$TMP_DIR/wrapper-tier.out"; then
+  cat "$TMP_DIR/wrapper-tier.out" >&2 || true
+  echo "Expected the task tier banner" >&2
   exit 1
 fi
 

@@ -89,6 +89,7 @@ The daemon writes `.moe/daemon.json` with `{ port, pid, startedAt, projectPath }
 - Tool results are returned as `content: [{ type: "text", text: "<json>" }]`.
 - Errors are JSON-RPC errors with `code: -32000` and `message` set to the error string.
 - Rails violations include details in `error.data`.
+- **Role-scoped `tools/list`.** `moe-proxy` adds the seat's `MOE_WORKER_ID` to every `tools/list` request. The daemon resolves the caller's role (team role, else the `architect-`/`worker-`/`qa-`/`governor-` id prefix) and lists only the tools that role uses, per `TOOL_AUDIENCE` in `packages/moe-daemon/src/tools/index.ts`. The governor sees every agent-facing tool; wrapper-only tools (`heartbeat`, `deregister_worker`, `get_commit_scope`, `record_candidate`, `record_delivery_receipt`, `reattach_attempt`) are listed to nobody. A request with no `workerId`, or whose role can't be resolved (IDE plugins, `moe-call.sh`, a human), gets the full list. This filters the listing only: `tools/call` still serves every registered tool. A new tool needs a `TOOL_AUDIENCE` entry (`toolAudience.test.ts` enforces it).
 
 ---
 
@@ -275,6 +276,7 @@ Submit an implementation plan. Sets task status to `AWAITING_APPROVAL`.
   taskId: string,
   workerId?: string,    // Optional; auto-injected by moe-proxy from MOE_WORKER_ID
   steps: { description: string; affectedFiles?: string[]; newFiles?: string[] }[],
+  tier?: 'light' | 'standard' | 'heavy',  // launch tier for the worker/QA sessions; omit = plan-size tier
   planningNotes?: { approachesConsidered?, codebaseInsights?, risks?, keyFiles? }
 }
 ```
@@ -291,12 +293,13 @@ Submit an implementation plan. Sets task status to `AWAITING_APPROVAL`.
 - **Affected-path existence gate:** every `affectedFiles` entry must exist on disk under the project root, unless some step declares it in `newFiles`. A plan citing a path that exists nowhere is rejected with `INVALID_INPUT`, `context.missingPaths`, `context.projectRoot`, and a message teaching both fixes — correct the path (they are relative to the PROJECT ROOT, so `packages/moe-daemon/src/x.ts`, not `src/x.ts`) or declare files this task creates in that step's `newFiles`. The exemption is plan-wide, so a file created in step 1 may be cited by step 2. `newFiles` still count toward the distinct-file total (deduped against `affectedFiles`) and are still scanned by the rails check, so declaring a path new cannot dodge either gate. The check runs after the rails and plan-size gates, and fails open: an unreadable project root, or any stat error other than `ENOENT`/`ENOTDIR`, is treated as "exists".
 - **Plan-size gate:** oversized plans are rejected with `CONSTRAINT_VIOLATION` — more than 12 steps or more than 10 *distinct* affected files (union across steps) — with `suggestedAction` pointing at `moe.create_task` ("split the task"). Past the softer thresholds (8 steps / 5 distinct files) the response carries a `warnings: string[]` array instead. Thresholds configurable via `project.json` `settings.taskSizing { warnSteps, maxSteps, warnDistinctFiles, maxDistinctFiles }`.
 - Plan submission refreshes `metrics.plannedStepCount`.
+- **Launch tier:** stores `task.tier` = the requested `tier`, never below the plan-size floor (`light` ≤3 steps and ≤2 distinct files, `standard` within the `taskSizing` warn thresholds, `heavy` past them) and never below the task's existing tier (a re-plan keeps a `qa_reject` escalation). `moe.claim_next_task` turns it into the `launch` hint; see `settings.routing` in `docs/CONFIGURATION.md`.
 - **CONTROL mode side effect:** the daemon posts `📋 Plan ready for critique — <title> (<id>)` to `#governors` with the step count, distinct-file count, any size warnings, a size rubric line, and a DoD preview. If at least one registered governor exists, `task.pendingPlanCritique` is set to record who is expected to weigh in. Critique is informational; humans still own approval.
 - **Warn-zone persistence + unsupervised size critique:** warn-zone warnings are persisted as `task.planSizeWarnings` (cleared by a compliant resubmit). With `settings.taskSizing.autoCritique: true`, CONTROL mode, and NO governor online, the daemon auto-blocks a warn-zone plan back to `PLANNING` (verdict recorded as `planCritiqueResult` by `moe-daemon-size-critic`, bounded by the same `critiqueBlockCount` cap as governor blocks; at the cap the task rests in `AWAITING_APPROVAL` with a `🛑 HUMAN DECISION REQUIRED` post). The response's `status` is then `"PLANNING"` and `nextAction` routes to a re-plan via `moe-epic-breakdown`.
 
 **Returns:**
 ```typescript
-{ success: true, taskId, status: "AWAITING_APPROVAL", stepCount, distinctFileCount, newFileCount, planRevision, warnings?: string[], message, nextAction }
+{ success: true, taskId, status: "AWAITING_APPROVAL", stepCount, distinctFileCount, newFileCount, tier, planRevision, warnings?: string[], message, nextAction }
 ```
 - `planRevision` is the revision this submission committed (read from the write's own Task, not a later cache read). It is the token a client sends back as `expectedPlanRevision` when it later approves the plan — see [Plan approval — `expectedPlanRevision` compare-and-swap](#plan-approval--expectedplanrevision-compare-and-swap).
 
@@ -1167,6 +1170,11 @@ With `preferAdjacentInEpic` on (default), candidates in the caller's currently-r
   handoffHint?: string,             // present when priorHandoffs exist
   staleHandoffDiskState?: true,     // the tree moved since the newest handoff was written
   fileCollision?: Array<{ task: string, files: string[] }>,  // advisory only
+  launch?: {                        // WORKING/REVIEW task with a tier and settings.routing not disabled;
+    tier: 'light' | 'standard' | 'heavy',  // also on the alreadyAssigned answer (resume relaunch)
+    effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max',
+    model?: string                  // only when settings.routing.<tier>.model is set
+  },
   alreadyAssigned?: {               // hasNext: false — you already hold an active task
     taskId: string,
     title: string,
@@ -1877,6 +1885,7 @@ QA rejects a task in REVIEW status, moving it back to WORKING for fixes — or t
   - `reopenCount ≥ maxReopens` (default 3 via `MAX_REOPENS_DEFAULT`; per-task override `task.maxReopens`), OR
   - the **same DoD item has failed ≥2 times** in `failedDodItems[]`.
 - On auto-flip, posts a heads-up to `#architects`; on every rejection, cross-posts `❌ QA rejected ...` to `#governors`.
+- **Tier escalation:** bumps `task.tier` one step (`light` → `standard` → `heavy`, capped) for the next attempt, whether it returns to WORKING or PLANNING; an unset tier starts from the plan-size floor. A hard-cap park keeps its tier.
 - **Closes the QA seat's attempt:** the flip clears `assignedWorkerId` (the hard-cap park writes `null` explicitly), and that write closes the task's `running`/`reconciling` attempts (see **Close on hand-back** under Ownership & Ordering). A daemon restart after the rejection therefore has nothing of the QA seat's to park, and an explicit `moe.claim_next_task` of the returned row succeeds with the next generation.
 
 **Errors:**

@@ -649,7 +649,7 @@ start_moe_usage_receipt() {
     [ "${MOE_USAGE_REPORTING:-}" != off ] || return 0
     local provider="$1" mode="$2" requested_model="" requested_effort="" prepared="" receipt_file="" receipt_context=""
     case "$provider" in
-        claude) requested_model="${RESOLVED_MODEL:-}"; requested_effort=max ;;
+        claude) requested_model="${ITER_MODEL:-${RESOLVED_MODEL:-}}"; requested_effort="${ITER_EFFORT:-max}" ;;
         codex) requested_effort="${MOE_CODEX_REASONING_EFFORT:-xhigh}" ;;
         *) return 0 ;;
     esac
@@ -1826,7 +1826,8 @@ EXPLICIT_MODEL="$RESOLVED_MODEL"
 if [ -z "$RESOLVED_MODEL" ]; then
     # Worker and qa default to Opus 5.5, architect and governor to Opus 5 --
     # matches moe-agent.ps1. Launched with
-    # --effort max below. Override per role via project.json settings.models.{role}.
+    # --effort max below unless the claimed task carries a launch tier.
+    # Override per role via project.json settings.models.{role}.
     case "$ROLE" in
         architect) RESOLVED_MODEL="claude-opus-5" ;;
         worker)    RESOLVED_MODEL="claude-opus-5-5" ;;
@@ -5623,6 +5624,8 @@ while [ "$LOOP_RUNNING" = true ]; do
     PREFLIGHT_OK=false
     PREFLIGHT_IS_RESUME=false
     PREFLIGHT_ROUTED_MENTIONS_JSON=""
+    # Per-task launch hint from claim_next_task (reset so a tier never leaks into the next task).
+    TASK_LAUNCH_TIER=""; TASK_LAUNCH_MODEL=""; TASK_LAUNCH_EFFORT=""
     PREFLIGHT_ROUTED_MENTIONS_COUNT=0
     # Taskless-launch state. A CLI that can edit code is only ever launched
     # with a task already bound, so these record WHY a taskless iteration
@@ -5984,6 +5987,26 @@ except Exception:
                 fi
 
                 pin_attempt_identity || echo "[WARN] Missing/stale attempt identity; candidate completion will fail closed."
+
+                # Per-task tier: claim_next_task (claim or alreadyAssigned resume)
+                # may carry launch {tier, effort, model}. Unknown effort values and
+                # odd model strings are dropped, leaving the seat defaults.
+                PARSED_LAUNCH=$($PYTHON_CMD -c "
+import json, re, sys
+try:
+    l = json.loads(sys.stdin.read()).get('launch') or {}
+    t = l.get('tier') if l.get('tier') in ('light', 'standard', 'heavy') else ''
+    e = l.get('effort') if l.get('effort') in ('low', 'medium', 'high', 'xhigh', 'max') else ''
+    m = l.get('model') if isinstance(l.get('model'), str) and re.fullmatch(r'[A-Za-z0-9._:/@-]{1,128}', l.get('model')) else ''
+    if t:
+        sys.stdout.write(t + '\x1f' + m + '\x1f' + e)
+except Exception:
+    pass
+" <<< "$CLAIM_RESULT" 2>/dev/null || echo "")
+                if [ -n "$PARSED_LAUNCH" ]; then
+                    IFS=$'\x1f' read -r TASK_LAUNCH_TIER TASK_LAUNCH_MODEL TASK_LAUNCH_EFFORT <<< "$PARSED_LAUNCH" || true
+                    TASK_LAUNCH_MODEL="${TASK_LAUNCH_MODEL:-}"; TASK_LAUNCH_EFFORT="${TASK_LAUNCH_EFFORT:-}"
+                fi
 
                 # 5. Fetch context for the claimed task
                 if [ -n "$PREFLIGHT_TASK_ID" ]; then
@@ -7065,9 +7088,19 @@ $PROMPT_BODY"
         fi
 
         # Only the `claude` CLI honors --model; codex/gemini pick their own.
+        # Per-task tier (launch hint) overrides the seat default model unless the
+        # operator pinned one (--model / settings.models.<role>); effort defaults to max.
+        ITER_MODEL="$RESOLVED_MODEL"
+        if [ -z "$EXPLICIT_MODEL" ] && [ -n "$TASK_LAUNCH_MODEL" ]; then
+            ITER_MODEL="$TASK_LAUNCH_MODEL"
+        fi
+        ITER_EFFORT="${TASK_LAUNCH_EFFORT:-max}"
+        if [ "$CLI_TYPE" = "claude" ] && [ -n "$TASK_LAUNCH_TIER" ]; then
+            echo -e "${GREEN}[OK]${NC} Task tier: $TASK_LAUNCH_TIER (model ${ITER_MODEL:-default}, effort $ITER_EFFORT)"
+        fi
         MODEL_ARGS=()
-        if [ "$CLI_TYPE" = "claude" ] && [ -n "$RESOLVED_MODEL" ]; then
-            MODEL_ARGS=(--model "$RESOLVED_MODEL")
+        if [ "$CLI_TYPE" = "claude" ] && [ -n "$ITER_MODEL" ]; then
+            MODEL_ARGS=(--model "$ITER_MODEL")
         fi
 
         # Prompt-cache stability. The default Claude Code system prompt bakes
@@ -7359,10 +7392,10 @@ PYEOF
             if [ ${#PRINT_ARGS[@]} -gt 0 ]; then
                 # Pipe through the parser; the subshell's exit (the CLI's) is
                 # PIPESTATUS[0] — the parser's own status is irrelevant.
-                (cd "$PROJECT" && "$COMMAND_BIN" "${COMMAND_ARGV[@]}" "${MODEL_ARGS[@]}" --append-system-prompt-file "$SYSTEM_PROMPT_FILE" "${CACHE_ARGS[@]}" --effort max "${PRINT_ARGS[@]}" "$PROMPT" 2>&1) | "$NODE_CMD" "$PROMPT_CACHE_HELPER" claude-stream | MOE_TOOL_WRITES_FILE="$MOE_TOOL_WRITES_FILE" MOE_GIT_TOP="$MOE_TOP" MOE_GIT_REL="$MOE_REL" MOE_SERENA_PROJECT_ROOT="${SERENA_PROJECT:-$PROJECT}" $PYTHON_CMD -u -c "$STREAM_JSON_PARSER"
+                (cd "$PROJECT" && "$COMMAND_BIN" "${COMMAND_ARGV[@]}" "${MODEL_ARGS[@]}" --append-system-prompt-file "$SYSTEM_PROMPT_FILE" "${CACHE_ARGS[@]}" --effort "$ITER_EFFORT" "${PRINT_ARGS[@]}" "$PROMPT" 2>&1) | "$NODE_CMD" "$PROMPT_CACHE_HELPER" claude-stream | MOE_TOOL_WRITES_FILE="$MOE_TOOL_WRITES_FILE" MOE_GIT_TOP="$MOE_TOP" MOE_GIT_REL="$MOE_REL" MOE_SERENA_PROJECT_ROOT="${SERENA_PROJECT:-$PROJECT}" $PYTHON_CMD -u -c "$STREAM_JSON_PARSER"
                 CLI_EXIT_CODE=${PIPESTATUS[0]}
             else
-                (cd "$PROJECT" && "$COMMAND_BIN" "${COMMAND_ARGV[@]}" "${MODEL_ARGS[@]}" --append-system-prompt-file "$SYSTEM_PROMPT_FILE" "${CACHE_ARGS[@]}" --effort max "$PROMPT")
+                (cd "$PROJECT" && "$COMMAND_BIN" "${COMMAND_ARGV[@]}" "${MODEL_ARGS[@]}" --append-system-prompt-file "$SYSTEM_PROMPT_FILE" "${CACHE_ARGS[@]}" --effort "$ITER_EFFORT" "$PROMPT")
                 CLI_EXIT_CODE=$?
             fi
 
@@ -7372,11 +7405,11 @@ PYEOF
 
             if [ ${#PRINT_ARGS[@]} -gt 0 ]; then
                 start_moe_usage_receipt "$CLI_TYPE" headless
-                (cd "$PROJECT" && "$COMMAND_BIN" "${COMMAND_ARGV[@]}" "${MODEL_ARGS[@]}" --append-system-prompt-file "$SYSTEM_PROMPT_FILE" "${CACHE_ARGS[@]}" --effort max "${PRINT_ARGS[@]}" 2>&1) | "$NODE_CMD" "$PROMPT_CACHE_HELPER" claude-stream | MOE_TOOL_WRITES_FILE="$MOE_TOOL_WRITES_FILE" MOE_GIT_TOP="$MOE_TOP" MOE_GIT_REL="$MOE_REL" MOE_SERENA_PROJECT_ROOT="${SERENA_PROJECT:-$PROJECT}" $PYTHON_CMD -u -c "$STREAM_JSON_PARSER"
+                (cd "$PROJECT" && "$COMMAND_BIN" "${COMMAND_ARGV[@]}" "${MODEL_ARGS[@]}" --append-system-prompt-file "$SYSTEM_PROMPT_FILE" "${CACHE_ARGS[@]}" --effort "$ITER_EFFORT" "${PRINT_ARGS[@]}" 2>&1) | "$NODE_CMD" "$PROMPT_CACHE_HELPER" claude-stream | MOE_TOOL_WRITES_FILE="$MOE_TOOL_WRITES_FILE" MOE_GIT_TOP="$MOE_TOP" MOE_GIT_REL="$MOE_REL" MOE_SERENA_PROJECT_ROOT="${SERENA_PROJECT:-$PROJECT}" $PYTHON_CMD -u -c "$STREAM_JSON_PARSER"
                 CLI_EXIT_CODE=${PIPESTATUS[0]}
             else
                 start_moe_usage_receipt "$CLI_TYPE" interactive
-                (cd "$PROJECT" && "$COMMAND_BIN" "${COMMAND_ARGV[@]}" "${MODEL_ARGS[@]}" --append-system-prompt-file "$SYSTEM_PROMPT_FILE" "${CACHE_ARGS[@]}" --effort max)
+                (cd "$PROJECT" && "$COMMAND_BIN" "${COMMAND_ARGV[@]}" "${MODEL_ARGS[@]}" --append-system-prompt-file "$SYSTEM_PROMPT_FILE" "${CACHE_ARGS[@]}" --effort "$ITER_EFFORT")
                 CLI_EXIT_CODE=$?
             fi
 

@@ -3,7 +3,8 @@
 // =============================================================================
 
 import type { StateManager } from '../state/StateManager.js';
-import { getTools } from '../tools/index.js';
+import { getTools, toolsForRole } from '../tools/index.js';
+import { resolveWorkerRole } from '../util/workerRole.js';
 import { logger } from '../util/logger.js';
 import { VERSION } from '../util/version.js';
 import { MoeError } from '../util/errors.js';
@@ -263,7 +264,10 @@ export class McpAdapter {
       }
 
       if (request.method === 'tools/list') {
-        const tools = Array.from(this.tools.values()).map((tool) => ({
+        // Listing filter, not a permission check: tools/call below serves every tool.
+        const workerId = (request.params as { workerId?: unknown } | undefined)?.workerId;
+        const role = typeof workerId === 'string' && workerId ? resolveWorkerRole(this.state, workerId) : null;
+        const tools = toolsForRole(Array.from(this.tools.values()), role).map((tool) => ({
           name: tool.name,
           description: tool.description,
           inputSchema: tool.inputSchema

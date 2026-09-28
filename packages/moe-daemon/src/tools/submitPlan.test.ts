@@ -219,6 +219,27 @@ describe('SPEED mode timeout cancellation', () => {
     expect(state.getTask('task-own2')?.status).toBe('AWAITING_APPROVAL');
   });
 
+  it('stores the launch tier: architect pick, floored by plan size, never below an escalated tier', async () => {
+    setupMoeFolder();
+    createEpic();
+    createTask({ id: 'task-t1', status: 'PLANNING' });
+    createTask({ id: 'task-t2', status: 'PLANNING', order: 2 });
+    createTask({ id: 'task-t3', status: 'PLANNING', order: 3, tier: 'heavy' });
+    await state.load();
+    const tool = submitPlanTool(state);
+
+    const omitted = await tool.handler({ taskId: 'task-t1', steps: [{ description: 'Step 1' }] }, state) as { tier: string };
+    expect(omitted.tier).toBe('light');
+    expect(state.getTask('task-t1')?.tier).toBe('light');
+
+    await tool.handler({ taskId: 'task-t2', tier: 'heavy', steps: [{ description: 'Step 1' }] }, state);
+    expect(state.getTask('task-t2')?.tier).toBe('heavy');
+
+    // A re-plan after qa_reject escalation keeps the raised tier.
+    await tool.handler({ taskId: 'task-t3', tier: 'light', steps: [{ description: 'Step 1' }] }, state);
+    expect(state.getTask('task-t3')?.tier).toBe('heavy');
+  });
+
   it('scrubs failedDodItems on a fresh plan so the same-item net counts only within the new attempt', async () => {
     setupMoeFolder();
     createEpic();

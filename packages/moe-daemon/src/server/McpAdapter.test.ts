@@ -5,7 +5,8 @@ import type { StateManager } from '../state/StateManager.js';
 import { invalidInput, invalidState, notAllowed, notFound } from '../util/errors.js';
 
 // Mock the tools module
-vi.mock('../tools/index.js', () => ({
+vi.mock('../tools/index.js', async (importOriginal) => ({
+  toolsForRole: (await importOriginal<typeof import('../tools/index.js')>()).toolsForRole,
   getTools: () => [
     {
       name: 'moe.test_tool',
@@ -20,6 +21,18 @@ vi.mock('../tools/index.js', () => ({
       handler: vi.fn(async (args: { message: string }) => ({
         echo: args.message,
       })),
+    },
+    {
+      name: 'moe.qa_approve',
+      description: 'QA-only tool',
+      inputSchema: { type: 'object' },
+      handler: vi.fn(async () => ({ approved: true })),
+    },
+    {
+      name: 'moe.heartbeat',
+      description: 'Wrapper-only tool',
+      inputSchema: { type: 'object' },
+      handler: vi.fn(async () => ({ ok: true })),
     },
     {
       name: 'moe.failing_tool',
@@ -117,9 +130,33 @@ describe('McpAdapter', () => {
       expect(response.result).toBeDefined();
 
       const result = response.result as { tools: Array<{ name: string; description: string }> };
-      expect(result.tools).toHaveLength(2);
+      expect(result.tools).toHaveLength(4);
       expect(result.tools[0].name).toBe('moe.test_tool');
       expect(result.tools[0].description).toBe('A test tool');
+    });
+
+    it('lists only the caller role\'s tools when the proxy sends a workerId', async () => {
+      (mockState as unknown as { getTeamForWorker: () => null }).getTeamForWorker = () => null;
+      const names = async (workerId: string) => {
+        const response = (await adapter.handle({
+          jsonrpc: '2.0', id: 1, method: 'tools/list', params: { workerId },
+        })) as JsonRpcResponse;
+        return (response.result as { tools: Array<{ name: string }> }).tools.map((t) => t.name);
+      };
+      // Unmapped tools stay visible; qa_approve is QA's; heartbeat is wrapper-only.
+      expect(await names('worker-abc')).toEqual(['moe.test_tool', 'moe.failing_tool']);
+      expect(await names('qa-abc')).toEqual(['moe.test_tool', 'moe.qa_approve', 'moe.failing_tool']);
+      expect(await names('governor-abc')).toEqual(['moe.test_tool', 'moe.qa_approve', 'moe.failing_tool']);
+      expect(await names('human')).toHaveLength(4);
+    });
+
+    it('still serves a tool it does not list', async () => {
+      (mockState as unknown as { getTeamForWorker: () => null }).getTeamForWorker = () => null;
+      const response = (await adapter.handle({
+        jsonrpc: '2.0', id: 1, method: 'tools/call',
+        params: { name: 'moe.heartbeat', arguments: { workerId: 'worker-abc' } },
+      })) as JsonRpcResponse;
+      expect(response.error).toBeUndefined();
     });
 
     it('handles null id', async () => {

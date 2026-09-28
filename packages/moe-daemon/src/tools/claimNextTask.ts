@@ -13,6 +13,7 @@ import {
   heldTaskRefusal,
   isClaimGatedByDependsOn
 } from '../util/claimEligibility.js';
+import { resolveLaunch } from '../util/routing.js';
 import { dependencyShortfall, unmetDependsOn } from '../state/dependencyUnblock.js';
 import { describeMissingEvidence } from '../delivery/policy.js';
 import {
@@ -334,7 +335,9 @@ export function claimNextTaskTool(_state: StateManager): ToolDefinition {
           // refused (see util/claimEligibility.ts).
           const hold = blockingHold(state, params.workerId, params.taskId);
           if (hold) {
-            return heldTaskRefusal(hold, params.workerId);
+            // The resume relaunch reads `launch` too, so a respawned CLI keeps the tier.
+            const heldLaunch = resolveLaunch(hold, state.project?.settings);
+            return { ...heldTaskRefusal(hold, params.workerId), ...(heldLaunch ? { launch: heldLaunch } : {}) };
           }
 
           // The seat is not free while an attempt of THIS worker is still
@@ -730,6 +733,7 @@ export function claimNextTaskTool(_state: StateManager): ToolDefinition {
         baseHandoffHint = handoffHint;
       }
 
+      const launch = resolveLaunch(task, state.project?.settings);
       return {
         hasNext: true,
         task: {
@@ -752,6 +756,8 @@ export function claimNextTaskTool(_state: StateManager): ToolDefinition {
         ...(claimedAttempt
           ? { attemptId: claimedAttempt.id, generation: claimedAttempt.generation }
           : {}),
+        // Model/effort the wrapper launches this task's CLI with (settings.routing).
+        ...(launch ? { launch } : {}),
         ...(task.reopenCount > 0
           ? {
               reopenWarning: `WARNING: This task was rejected by QA (${task.reopenCount} time(s)). Read reopenReason and rejectionDetails carefully. Fix the identified issues before proceeding.`

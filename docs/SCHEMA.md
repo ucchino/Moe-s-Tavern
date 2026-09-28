@@ -188,6 +188,15 @@ interface ProjectSettings {
     autoCritique?: boolean;
   };
 
+  // Per-tier model/effort for the wrapper's CLI launch, read at claim time into
+  // the claim `launch` hint. Hand-edited only; invalid values are ignored.
+  routing?: {
+    enabled?: boolean;           // default: true
+    light?: { model?: string; effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' };    // default effort: medium
+    standard?: { model?: string; effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' }; // default effort: high
+    heavy?: { model?: string; effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' };    // default effort: max
+  };                             // no default model — the wrapper keeps its role default
+
   // DEPRECATED — accepted and ignored. Fed the removed task time-budget feature
   // (80%/100% warn + escalate). moe.submit_plan no longer reads it and writes no
   // task time budget. Still accepted so an existing project.json keeps loading.
@@ -386,6 +395,7 @@ interface Task {
   rejectionHistory?: RejectionHistoryEntry[];   // Newest-first; capped at 20 entries
   failedDodItems?: FailedDodItem[];             // Append-only DoD failure log; capped at last 100
   maxReopens?: number;                          // Per-task override of MAX_REOPENS_DEFAULT (3)
+  tier?: 'light' | 'standard' | 'heavy';        // Launch tier: submit_plan (floored by plan size), +1 per qa_reject
   priorAttempt?: PriorAttempt;                  // Snapshot from moe.request_replan
   priorHandoffs?: HandoffNote[];                // Newest-first; capped at 20
 

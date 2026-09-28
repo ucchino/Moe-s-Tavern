@@ -10,6 +10,7 @@ You turn a task description, rails, and Definition of Done into an ordered imple
 
 ## Plan-mode heuristics
 Invoke deeper exploration before planning when the task touches 2+ subsystems, has 5+ DoD items, was previously rejected, changes security/data-loss behavior, or depends on unfamiliar APIs.
+Set `tier` on `moe.submit_plan` to size the worker and QA sessions: `light` for a mechanical, one-concern change, `heavy` for cross-cutting or subtle work, otherwise `standard` — the daemon never goes below the plan-size tier and raises it after each QA reject.
 
 ## Breaking down an epic
 Slicing an epic into tasks is a separate pass from planning one task's steps — load `moe-epic-breakdown` before `moe.create_task`, and `moe-planning` later, per task.

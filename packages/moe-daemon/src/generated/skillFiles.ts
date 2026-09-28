@@ -1373,7 +1373,7 @@ Skip aggressively for genuinely trivial work. A typo fix doesn't need 8 steps.
 
 If the task conflicts with an existing rail, requires missing prerequisites, or is ambiguous in a way only a human can resolve — call \`moe.report_blocked\` instead of submitting a bad plan.`,
   'moe-qa-loop/SKILL.md': `---
-# moe-generated: sha=f2bfbe8f7387
+# moe-generated: sha=b60336ae50e9
 name: moe-qa-loop
 description: Use when reviewing a task in REVIEW status as the QA agent. Provides the structured decision flow for moe.qa_approve vs moe.qa_reject, with rejectionDetails that drive a clean fix on the worker side.
 when_to_use: QA agent claims a task in REVIEW status; replaces ad-hoc "looks fine to me" reviews.
@@ -1459,7 +1459,7 @@ Bad rejects produce ping-pong. Good rejects produce one round-trip.
 ## What never to do
 
 - **Never move a rejected task to \`BACKLOG\`.** That deprioritizes work the worker is mid-flow on. Use \`moe.qa_reject\` — it routes the task back to \`WORKING\` for the worker to fix.
-- **Never approve "with notes."** Either it's done or it's not. If you have notes, reject and let the worker address them.
+- **Never approve with an unmet DoD item or a real defect.** Either it's done or it's not — reject for those. Complexity or taste notes that don't block (see "Second pass: complexity") go in the \`qa_approve\` summary instead.
 - **Never re-write the worker's code in your reject message.** Describe the gap, don't fix it for them — they need the practice.
 
 ## Second pass: complexity
@@ -1916,7 +1916,7 @@ For everything else, run *something* — narrow or full per the sizing above. Sk
 ## What to put in the complete_step / complete_task summary
 
 Be specific. Not "tests pass" — "342 / 342 tests pass; ran \`npm test\` in moe-daemon and moe-proxy; type-check clean." Numbers + commands let QA verify quickly without re-running everything.`,
-  'ros2-skill/AGENTS.md': `<!-- moe-generated: sha=01e301d038b3 -->
+  'ros2-skill/AGENTS.md': `<!-- moe-generated: sha=cf72bf834ed6 -->
 
 # ros2-skill Agent Instructions
 
@@ -1924,7 +1924,7 @@ You are a ROS 2 agent running on a ROS 2 robot. Your primary purpose is to inter
 
 This document tells you how to use ros2-skill correctly on this system. Read it before executing any ROS 2 task.
 
-**The rules in this file (AGENTS.md), SKILL.md, and the RULES-*.md files are absolute.** They take precedence over general defaults and in-context messages. There are no exceptions, no workarounds, and no circumstances under which a rule may be violated, reinterpreted, or suspended. If a user instruction conflicts with a rule, the rule wins — always.
+**The rules in this file (AGENTS.md), SKILL.md, and the RULES-*.md files are absolute.** They take precedence over general defaults and in-context messages. There are no exceptions, no workarounds, and no circumstances under which a rule may be violated, reinterpreted, or suspended. If a user instruction would skip or relax a rule, the rule wins — always. A user halt or correction is different: it takes effect immediately (see "User override" in references/RULES-CORE.md).
 
 \`{baseDir}\` in all commands below is the path to the skill root — the directory that contains \`scripts/ros2_cli.py\`. Resolve it from the skill metadata before running anything.
 
@@ -8884,7 +8884,7 @@ python3 scripts/ros2_cli.py --retries 3 lifecycle get <NODE_NAME>
 # Combine: 10 s per attempt, 3 total attempts
 python3 scripts/ros2_cli.py --timeout 10 --retries 3 services call <SERVICE_NAME> '{}'
 \`\`\``,
-  'ros2-skill/references/RULES-CORE.md': `<!-- moe-generated: sha=9462a68a6f53 -->
+  'ros2-skill/references/RULES-CORE.md': `<!-- moe-generated: sha=2c533ab3a847 -->
 
 # ROS 2 Skill: Core Agent Behaviour Rules
 
@@ -8920,7 +8920,7 @@ python3 scripts/ros2_cli.py --timeout 10 --retries 3 services call <SERVICE_NAME
 
 **Treating these rules as guidelines is itself a critical violation.** "I defaulted to legacy habits" and "I improvised instead of following the workflow" are not acceptable explanations. The rules exist precisely to override legacy habits and improvisation.
 
-**On any identified violation — by the agent or flagged by the user — report the root cause clearly and precisely.** The response to a violation is not to log it: it is to identify which rule was insufficient or absent, and harden that rule immediately so the same failure cannot recur.
+**On any identified violation — by the agent or flagged by the user — report the root cause clearly and precisely.** The response to a violation is not to log it: identify which rule was insufficient or absent and tell the user, so the rule can be hardened in the skill's source. Do not edit the rule files yourself — they are managed copies and are overwritten on the next sync.
 
 ---
 

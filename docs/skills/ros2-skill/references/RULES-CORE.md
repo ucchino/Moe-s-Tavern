@@ -32,7 +32,7 @@
 
 **Treating these rules as guidelines is itself a critical violation.** "I defaulted to legacy habits" and "I improvised instead of following the workflow" are not acceptable explanations. The rules exist precisely to override legacy habits and improvisation.
 
-**On any identified violation — by the agent or flagged by the user — report the root cause clearly and precisely.** The response to a violation is not to log it: it is to identify which rule was insufficient or absent, and harden that rule immediately so the same failure cannot recur.
+**On any identified violation — by the agent or flagged by the user — report the root cause clearly and precisely.** The response to a violation is not to log it: identify which rule was insufficient or absent and tell the user, so the rule can be hardened in the skill's source. Do not edit the rule files yourself — they are managed copies and are overwritten on the next sync.
 
 ---
 

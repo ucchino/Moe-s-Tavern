@@ -240,6 +240,73 @@ describe('SPEED mode timeout cancellation', () => {
     expect(state.getTask('task-t3')?.tier).toBe('heavy');
   });
 
+  it('stores the planner effort and models: validated per provider and tier, effort raised to the allowed minimum', async () => {
+    setupMoeFolder();
+    createEpic();
+    for (let i = 1; i <= 6; i++) createTask({ id: `task-m${i}`, status: 'PLANNING', order: i });
+    createTask({ id: 'task-m7', status: 'PLANNING', order: 7, effort: 'max' });
+    await state.load();
+    const tool = submitPlanTool(state);
+    const step = [{ description: 'Step 1' }];
+
+    // Both picks stored; the response previews the launch for both CLIs.
+    const ok = await tool.handler({
+      taskId: 'task-m1', steps: step, effort: 'xhigh', model: 'claude-sonnet-5-5', codexModel: 'gpt-6-luna',
+    }, state) as { launch: unknown; effortRaised?: unknown };
+    expect(ok.effortRaised).toBeUndefined();
+    expect(ok.launch).toEqual({
+      tier: 'light', effort: 'xhigh', model: 'claude-sonnet-5-5', codex: { model: 'gpt-6-luna', effort: 'xhigh' },
+    });
+    expect(state.getTask('task-m1')).toMatchObject({ effort: 'xhigh', model: 'claude-sonnet-5-5', codexModel: 'gpt-6-luna' });
+
+    // Not in the catalog, or not allowed at the tier: rejected with the allowed ids.
+    await expect(tool.handler({ taskId: 'task-m2', steps: step, model: 'claude-made-up' }, state))
+      .rejects.toThrow(/allowed claude models: claude-opus-5-5, claude-sonnet-5-5/);
+    await expect(tool.handler({ taskId: 'task-m3', steps: step, tier: 'heavy', model: 'claude-sonnet-5-5' }, state))
+      .rejects.toThrow(/heavy task; allowed claude models: claude-opus-5-5\b/);
+    await expect(tool.handler({ taskId: 'task-m4', steps: step, tier: 'standard', codexModel: 'gpt-6-luna' }, state))
+      .rejects.toThrow(/allowed codex models: gpt-6-astra, gpt-6.1-sol/);
+
+    // A disallowed effort is raised to the lowest allowed level, and to the tier minimum.
+    const low = await tool.handler({ taskId: 'task-m5', steps: step, effort: 'low' }, state) as { effortRaised: { to: string } };
+    expect(low.effortRaised.to).toBe('high');
+    const heavy = await tool.handler({ taskId: 'task-m6', steps: step, tier: 'heavy', effort: 'high' }, state) as { effortRaised: { to: string } };
+    expect(heavy.effortRaised.to).toBe('xhigh');
+    // A re-plan never lowers an effort a qa_reject escalation raised.
+    await tool.handler({ taskId: 'task-m7', steps: step, effort: 'high' }, state);
+    expect(state.getTask('task-m7')?.effort).toBe('max');
+  });
+
+  it('allows low effort only for a docs/tests-only plan, decided from its files', async () => {
+    setupMoeFolder();
+    createEpic();
+    for (const id of ['task-d1', 'task-d2', 'task-d3']) createTask({ id, status: 'PLANNING', order: Number(id.at(-1)) });
+    await state.load();
+    const tool = submitPlanTool(state);
+    type R = { lowEffort?: string; effortRaised?: { to: string }; launch: { effort: string } };
+
+    const docs = await tool.handler({
+      taskId: 'task-d1', effort: 'low', steps: [{ description: 'Docs', newFiles: ['docs/guide.md', 'src/a.test.ts'] }],
+    }, state) as R;
+    expect(docs.lowEffort).toBe('docs/tests-only: low effort allowed');
+    expect(docs.effortRaised).toBeUndefined();
+    expect(docs.launch.effort).toBe('low');
+    expect(state.getTask('task-d1')?.lowEffortEligible).toBe(true);
+
+    const code = await tool.handler({
+      taskId: 'task-d2', effort: 'low', steps: [{ description: 'Code', newFiles: ['src/feature.ts'] }],
+    }, state) as R;
+    expect(code.lowEffort).toBeUndefined();
+    expect(code.effortRaised?.to).toBe('high');
+    expect(state.getTask('task-d2')?.lowEffortEligible).toBeUndefined();
+
+    const mixed = await tool.handler({
+      taskId: 'task-d3', effort: 'medium', steps: [{ description: 'Mixed', newFiles: ['README.md', 'src/feature.ts'] }],
+    }, state) as R;
+    expect(mixed.lowEffort).toBeUndefined();
+    expect(mixed.launch.effort).toBe('high');
+  });
+
   it('scrubs failedDodItems on a fresh plan so the same-item net counts only within the new attempt', async () => {
     setupMoeFolder();
     createEpic();

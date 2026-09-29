@@ -156,6 +156,8 @@ for banner in 'Grok MCP config written to:' 'Grok mode: headless' 'Grok mode: in
 done
 # Per-task launch tier (claim_next_task launch hint).
 require_both "launch tier banner" 'Task tier:'
+require_both "codex per-task hint" 'Per-task model/effort (launch.codex hint)'
+require_both "codex per-task effort" 'model_reasoning_effort='
 
 # MCP tools the wrappers call for the ledger.
 for tool in get_commit_scope record_commit record_candidate record_check_run finalize_attempt; do

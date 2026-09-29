@@ -321,7 +321,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --grok-exec              Use grok headless mode (non-interactive, --prompt-file --yolo)"
             echo "  --interactive            Force Claude into interactive TUI (default: on for architect/governor)"
             echo "  --no-interactive         Force one-shot --print mode (default for worker/qa; fresh CLI per task)"
-            echo "  --model MODEL            Claude model override (default: worker/qa = claude-opus-5-5, architect/governor = claude-opus-5)"
+            echo "  --model MODEL            Claude model override (default: all roles = claude-opus-5-5)"
             echo "  --help, -h               Show this help"
             echo ""
             echo "Examples:"
@@ -650,7 +650,7 @@ start_moe_usage_receipt() {
     local provider="$1" mode="$2" requested_model="" requested_effort="" prepared="" receipt_file="" receipt_context=""
     case "$provider" in
         claude) requested_model="${ITER_MODEL:-${RESOLVED_MODEL:-}}"; requested_effort="${ITER_EFFORT:-max}" ;;
-        codex) requested_effort="${MOE_CODEX_REASONING_EFFORT:-xhigh}" ;;
+        codex) requested_model="${ITER_CODEX_MODEL:-}"; requested_effort="${ITER_CODEX_EFFORT:-${MOE_CODEX_REASONING_EFFORT:-xhigh}}" ;;
         *) return 0 ;;
     esac
     if ! MOE_USAGE_CONTEXT_JSON=$("$PYTHON_CMD" -c 'import json,sys
@@ -1806,7 +1806,7 @@ fi
 
 # Resolve Claude model for this role.
 # Precedence: --model flag -> project.json settings.models.<role> -> per-role default.
-# All roles -> Opus 5. Override per role via project.json settings.models.{role}.
+# All roles -> Opus 5.5. Override per role via project.json settings.models.{role}.
 RESOLVED_MODEL="$MODEL"
 if [ -z "$RESOLVED_MODEL" ] && [ -f "$PROJECT_JSON" ] && [ -n "$PYTHON_CMD" ]; then
     RESOLVED_MODEL=$($PYTHON_CMD -c "
@@ -1821,18 +1821,17 @@ except Exception:
 fi
 # The EXPLICIT model (--model flag or settings.models.<role>) before the claude
 # default is applied: grok is launched with -m ONLY when one of these exists,
-# never with the claude-opus-5 fallback below.
+# never with the claude-opus-5-5 fallback below.
 EXPLICIT_MODEL="$RESOLVED_MODEL"
 if [ -z "$RESOLVED_MODEL" ]; then
-    # Worker and qa default to Opus 5.5, architect and governor to Opus 5 --
-    # matches moe-agent.ps1. Launched with
+    # Every role defaults to Opus 5.5 -- matches moe-agent.ps1. Launched with
     # --effort max below unless the claimed task carries a launch tier.
     # Override per role via project.json settings.models.{role}.
     case "$ROLE" in
-        architect) RESOLVED_MODEL="claude-opus-5" ;;
+        architect) RESOLVED_MODEL="claude-opus-5-5" ;;
         worker)    RESOLVED_MODEL="claude-opus-5-5" ;;
         qa)        RESOLVED_MODEL="claude-opus-5-5" ;;
-        governor)  RESOLVED_MODEL="claude-opus-5" ;;
+        governor)  RESOLVED_MODEL="claude-opus-5-5" ;;
     esac
 fi
 if [ -n "$RESOLVED_MODEL" ]; then
@@ -5625,7 +5624,7 @@ while [ "$LOOP_RUNNING" = true ]; do
     PREFLIGHT_IS_RESUME=false
     PREFLIGHT_ROUTED_MENTIONS_JSON=""
     # Per-task launch hint from claim_next_task (reset so a tier never leaks into the next task).
-    TASK_LAUNCH_TIER=""; TASK_LAUNCH_MODEL=""; TASK_LAUNCH_EFFORT=""
+    TASK_LAUNCH_TIER=""; TASK_LAUNCH_MODEL=""; TASK_LAUNCH_EFFORT=""; TASK_LAUNCH_CODEX_MODEL=""; TASK_LAUNCH_CODEX_EFFORT=""
     PREFLIGHT_ROUTED_MENTIONS_COUNT=0
     # Taskless-launch state. A CLI that can edit code is only ever launched
     # with a task already bound, so these record WHY a taskless iteration
@@ -5998,14 +5997,18 @@ try:
     t = l.get('tier') if l.get('tier') in ('light', 'standard', 'heavy') else ''
     e = l.get('effort') if l.get('effort') in ('low', 'medium', 'high', 'xhigh', 'max') else ''
     m = l.get('model') if isinstance(l.get('model'), str) and re.fullmatch(r'[A-Za-z0-9._:/@-]{1,128}', l.get('model')) else ''
+    c = l.get('codex') if isinstance(l.get('codex'), dict) else {}
+    cm = c.get('model') if isinstance(c.get('model'), str) and re.fullmatch(r'[A-Za-z0-9._:/@-]{1,128}', c.get('model')) else ''
+    ce = c.get('effort') if c.get('effort') in ('low', 'medium', 'high', 'xhigh', 'max') else ''
     if t:
-        sys.stdout.write(t + '\x1f' + m + '\x1f' + e)
+        sys.stdout.write(t + '\x1f' + m + '\x1f' + e + '\x1f' + cm + '\x1f' + ce)
 except Exception:
     pass
 " <<< "$CLAIM_RESULT" 2>/dev/null || echo "")
                 if [ -n "$PARSED_LAUNCH" ]; then
-                    IFS=$'\x1f' read -r TASK_LAUNCH_TIER TASK_LAUNCH_MODEL TASK_LAUNCH_EFFORT <<< "$PARSED_LAUNCH" || true
+                    IFS=$'\x1f' read -r TASK_LAUNCH_TIER TASK_LAUNCH_MODEL TASK_LAUNCH_EFFORT TASK_LAUNCH_CODEX_MODEL TASK_LAUNCH_CODEX_EFFORT <<< "$PARSED_LAUNCH" || true
                     TASK_LAUNCH_MODEL="${TASK_LAUNCH_MODEL:-}"; TASK_LAUNCH_EFFORT="${TASK_LAUNCH_EFFORT:-}"
+                    TASK_LAUNCH_CODEX_MODEL="${TASK_LAUNCH_CODEX_MODEL:-}"; TASK_LAUNCH_CODEX_EFFORT="${TASK_LAUNCH_CODEX_EFFORT:-}"
                 fi
 
                 # 5. Fetch context for the claimed task
@@ -6779,6 +6782,22 @@ $PROMPT_BODY"
             fi
         fi
 
+        # Per-task model/effort (launch.codex hint). An operator pin wins:
+        # --model / settings.models.<role> keeps the model, MOE_CODEX_REASONING_EFFORT
+        # keeps the effort; with no hint, config.toml's model_reasoning_effort applies.
+        ITER_CODEX_MODEL=""; ITER_CODEX_EFFORT=""; CODEX_TASK_ARGS=()
+        if [ -z "$EXPLICIT_MODEL" ] && [ -n "$TASK_LAUNCH_CODEX_MODEL" ]; then
+            ITER_CODEX_MODEL="$TASK_LAUNCH_CODEX_MODEL"; CODEX_TASK_ARGS+=(-m "$ITER_CODEX_MODEL")
+        fi
+        if [ -z "${MOE_CODEX_REASONING_EFFORT:-}" ] && [ -n "$TASK_LAUNCH_CODEX_EFFORT" ]; then
+            ITER_CODEX_EFFORT="$TASK_LAUNCH_CODEX_EFFORT"; CODEX_TASK_ARGS+=(-c "model_reasoning_effort=$ITER_CODEX_EFFORT")
+        fi
+        if [ -n "$TASK_LAUNCH_TIER" ]; then
+            echo -e "${GREEN}[OK]${NC} Task tier: $TASK_LAUNCH_TIER (model ${ITER_CODEX_MODEL:-default}, effort ${ITER_CODEX_EFFORT:-${MOE_CODEX_REASONING_EFFORT:-xhigh}})"
+        fi
+        CODEX_TASK_BANNER=""
+        if [ "${#CODEX_TASK_ARGS[@]}" -gt 0 ]; then CODEX_TASK_BANNER=" ${CODEX_TASK_ARGS[*]}"; fi
+
         if [ "$CODEX_EXEC" = true ]; then
             # Non-interactive exec mode: codex -c <seat overrides> -c approvals_reviewer=user exec -C <project> [--sandbox <mode>] "<prompt>"
             # Never pass --full-auto here: codex-cli 0.147+ rejects it (`error: unexpected
@@ -6840,7 +6859,7 @@ $PROMPT_BODY"
             if [ "${CODEX_ARGV_PROBED:-false}" != true ] && [ "${MOE_DISABLE_ARGV_PROBE:-}" != "1" ]; then
                 CODEX_ARGV_PROBED=true
                 PROBE_EXIT=0
-                PROBE_OUT="$("$COMMAND_BIN" "${COMMAND_ARGV[@]}" -c "model_instructions_file=$CODEX_SEAT_INSTRUCTIONS_FILE" -c "mcp_servers.moe.env.MOE_WORKER_ID=$WORKER_ID" "${CODEX_EXEC_OVERRIDES[@]}" exec --json -C "$PROJECT" "${CODEX_SANDBOX_ARGS[@]}" --help 2>&1)" || PROBE_EXIT=$?
+                PROBE_OUT="$("$COMMAND_BIN" "${COMMAND_ARGV[@]}" -c "model_instructions_file=$CODEX_SEAT_INSTRUCTIONS_FILE" -c "mcp_servers.moe.env.MOE_WORKER_ID=$WORKER_ID" "${CODEX_TASK_ARGS[@]}" "${CODEX_EXEC_OVERRIDES[@]}" exec --json -C "$PROJECT" "${CODEX_SANDBOX_ARGS[@]}" --help 2>&1)" || PROBE_EXIT=$?
                 if [ "$PROBE_EXIT" -ne 0 ] && printf '%s\n' "$PROBE_OUT" | grep -qiE 'unexpected argument|unrecognized subcommand|unexpected value'; then
                     PROBE_LINE="$(printf '%s\n' "$PROBE_OUT" | grep -i 'error' | head -n1)"
                     [ -n "$PROBE_LINE" ] || PROBE_LINE="exit $PROBE_EXIT"
@@ -6860,7 +6879,7 @@ $PROMPT_BODY"
             echo ""
             # The banner is the line the launch-failure hint tells the operator to re-run by
             # hand, so it carries every argv token the real launch does (ps1 twin parity).
-            echo "Command: $COMMAND_BIN ${COMMAND_ARGV[*]} -c model_instructions_file=$CODEX_SEAT_INSTRUCTIONS_FILE -c mcp_servers.moe.env.MOE_WORKER_ID=$WORKER_ID ${CODEX_EXEC_OVERRIDES[*]} exec --json -C \"$PROJECT\"${CODEX_SANDBOX_BANNER} \"<prompt>\""
+            echo "Command: $COMMAND_BIN ${COMMAND_ARGV[*]} -c model_instructions_file=$CODEX_SEAT_INSTRUCTIONS_FILE -c mcp_servers.moe.env.MOE_WORKER_ID=$WORKER_ID${CODEX_TASK_BANNER} ${CODEX_EXEC_OVERRIDES[*]} exec --json -C \"$PROJECT\"${CODEX_SANDBOX_BANNER} \"<prompt>\""
             start_moe_usage_receipt codex headless
             set +e
 
@@ -6871,7 +6890,7 @@ $PROMPT_BODY"
             "$COMMAND_BIN" "${COMMAND_ARGV[@]}" \
                 -c "model_instructions_file=$CODEX_SEAT_INSTRUCTIONS_FILE" \
                 -c "mcp_servers.moe.env.MOE_WORKER_ID=$WORKER_ID" \
-                "${CODEX_EXEC_OVERRIDES[@]}" exec --json -C "$PROJECT" "${CODEX_SANDBOX_ARGS[@]}" "$SHORT_PROMPT" | "$NODE_CMD" "$PROMPT_CACHE_HELPER" codex-stream
+                "${CODEX_TASK_ARGS[@]}" "${CODEX_EXEC_OVERRIDES[@]}" exec --json -C "$PROJECT" "${CODEX_SANDBOX_ARGS[@]}" "$SHORT_PROMPT" | "$NODE_CMD" "$PROMPT_CACHE_HELPER" codex-stream
 
             CLI_EXIT_CODE=${PIPESTATUS[0]}
 
@@ -6880,14 +6899,14 @@ $PROMPT_BODY"
             # Interactive TUI mode
             echo "Starting Codex (interactive TUI)..."
             echo ""
-            echo "Command: $COMMAND_BIN ${COMMAND_ARGV[*]} -c model_instructions_file=$CODEX_SEAT_INSTRUCTIONS_FILE -c mcp_servers.moe.env.MOE_WORKER_ID=$WORKER_ID -C \"$PROJECT\" \"<prompt>\""
+            echo "Command: $COMMAND_BIN ${COMMAND_ARGV[*]} -c model_instructions_file=$CODEX_SEAT_INSTRUCTIONS_FILE -c mcp_servers.moe.env.MOE_WORKER_ID=$WORKER_ID${CODEX_TASK_BANNER} -C \"$PROJECT\" \"<prompt>\""
             start_moe_usage_receipt codex interactive
             set +e
 
             "$COMMAND_BIN" "${COMMAND_ARGV[@]}" \
                 -c "model_instructions_file=$CODEX_SEAT_INSTRUCTIONS_FILE" \
                 -c "mcp_servers.moe.env.MOE_WORKER_ID=$WORKER_ID" \
-                -C "$PROJECT" "$SHORT_PROMPT"
+                "${CODEX_TASK_ARGS[@]}" -C "$PROJECT" "$SHORT_PROMPT"
 
             CLI_EXIT_CODE=$?
 
@@ -6998,7 +7017,7 @@ $PROMPT_BODY"
             GROK_PROMPT_BODY="You are a $ROLE agent. Use ONLY Moe MCP tools (moe.*). $ROLE_WORKFLOW. First: join #general via moe.chat_channels, moe.chat_join, and moe.chat_send. Then moe.chat_read to catch up on messages. Then call moe.claim_next_task to get your next task."
         fi
         # -m ONLY for an explicit model (--model, settings.models.<role>, else
-        # MOE_GROK_MODEL) -- never the wrapper's claude-opus-5 fallback.
+        # MOE_GROK_MODEL) -- never the wrapper's claude-opus-5-5 fallback.
         # --effort only when MOE_GROK_EFFORT is set.
         GROK_MODEL_ARGS=()
         GROK_MODEL="${EXPLICIT_MODEL:-${MOE_GROK_MODEL:-}}"

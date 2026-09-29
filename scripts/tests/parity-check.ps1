@@ -84,7 +84,7 @@ $required = [ordered]@{
     # Codex headless launch vocabulary: the sandbox modes MOE_CODEX_SANDBOX
     # accepts and the fallback warning, spelled identically.
     'codex vocabulary' = @('read-only', 'workspace-write', 'danger-full-access', 'approvals_reviewer=user', 'MOE_CLI_ARGV_REJECTED', 'MOE_DISABLE_ARGV_PROBE', 'is not one of read-only | workspace-write | danger-full-access | inherit; using danger-full-access.', 'default_tools_approval_mode = "approve"', "rejects the wrapper's launch argv")
-    'cli banners' = @('Task tier:', 'Grok MCP config written to:', 'Grok mode: headless', 'Grok mode: interactive', 'Grok folder trust granted:', 'trusted_folders.toml', 'moe__moe_<name>', 'tool_timeouts = { moe_wait_for_task = 720, moe_chat_wait = 720, moe_wait_for_resource = 720 }')
+    'cli banners' = @('Task tier:', 'Per-task model/effort (launch.codex hint)', 'model_reasoning_effort=','Grok MCP config written to:', 'Grok mode: headless', 'Grok mode: interactive', 'Grok folder trust granted:', 'trusted_folders.toml', 'moe__moe_<name>', 'tool_timeouts = { moe_wait_for_task = 720, moe_chat_wait = 720, moe_wait_for_resource = 720 }')
     # Delivery receipts: the journal, the receipt call, its crash replay, the push
     # result it reports and the reused-gate line, spelled identically in both.
     'delivery receipt' = @('moe/receipt', '[receipt]', 'record_delivery_receipt', 'DELIVERY_RECEIPT_CONFLICT', 'targetBefore', 'targetAfter', 'landedRevision', 'pushResult', 'Moe-Kind: completion')

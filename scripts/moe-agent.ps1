@@ -55,7 +55,7 @@
     [switch]$Interactive,
 
     # Explicit model override (e.g. "claude-sonnet-5", "claude-opus-4-8").
-    # When empty, the launcher picks a per-role default — all roles → Opus 5.
+    # When empty, the launcher picks a per-role default — all roles → Opus 5.5.
     # Per-project overrides via .moe/project.json settings.models.{role}. Only
     # applies to the `claude` CLI; codex/gemini pick their own model. Grok gets
     # `-m <model>` only when one is explicit (-Model, settings.models.<role>,
@@ -660,14 +660,14 @@ if ($projConfig -and $projConfig.settings.PSObject.Properties['enableAgentTeams'
 
 # Resolve the Claude model for this role.
 # Precedence: -Model flag → .moe/project.json settings.models.<role> → per-role default.
-# Worker and qa default to Opus 5.5, architect and governor to Opus 5, launched
+# Every role defaults to Opus 5.5, launched
 # with --effort max below unless the claimed task carries a launch tier. Override
 # per role via project.json settings.models.{role}.
 $defaultModels = @{
-    architect = "claude-opus-5"
+    architect = "claude-opus-5-5"
     worker    = "claude-opus-5-5"
     qa        = "claude-opus-5-5"
-    governor  = "claude-opus-5"
+    governor  = "claude-opus-5-5"
 }
 $resolvedModel = ""
 if (-not [string]::IsNullOrWhiteSpace($Model)) {
@@ -752,8 +752,8 @@ function Start-MoeUsageReceipt([string]$Provider, [string]$LaunchMode) {
     if ($env:MOE_USAGE_REPORTING -eq 'off' -or $Provider -notin @('claude', 'codex')) { return }
     $savedExitCode = $global:LASTEXITCODE
     try {
-        $requestedModel = if ($Provider -eq 'claude') { if ($iterModel) { $iterModel } else { $resolvedModel } } else { $null }
-        $requestedEffort = if ($Provider -eq 'claude') { if ($iterEffort) { $iterEffort } else { 'max' } } elseif ($env:MOE_CODEX_REASONING_EFFORT) { $env:MOE_CODEX_REASONING_EFFORT } else { 'xhigh' }
+        $requestedModel = if ($Provider -eq 'claude') { if ($iterModel) { $iterModel } else { $resolvedModel } } elseif ($iterCodexModel) { $iterCodexModel } else { $null }
+        $requestedEffort = if ($Provider -eq 'claude') { if ($iterEffort) { $iterEffort } else { 'max' } } elseif ($iterCodexEffort) { $iterCodexEffort } elseif ($env:MOE_CODEX_REASONING_EFFORT) { $env:MOE_CODEX_REASONING_EFFORT } else { 'xhigh' }
         $env:MOE_USAGE_CONTEXT_JSON = @{ taskId=$preflightTaskId; workerId=$WorkerId; role=$Role
             attemptId=$script:MoeAttemptId; requestedModel=$requestedModel; requestedEffort=$requestedEffort
             launchMode=$LaunchMode } | ConvertTo-Json -Compress
@@ -5087,7 +5087,7 @@ do {
     $script:MoeRunnerId = "runner-" + [guid]::NewGuid().ToString("N")
     $preflightTaskId = ""
     # Per-task launch hint from claim_next_task (reset so a tier never leaks into the next task).
-    $taskLaunchTier = ""; $taskLaunchModel = ""; $taskLaunchEffort = ""
+    $taskLaunchTier = ""; $taskLaunchModel = ""; $taskLaunchEffort = ""; $taskLaunchCodexModel = ""; $taskLaunchCodexEffort = ""
     $preflightHeldTaskId = ""
     $preflightTaskTitle = ""
     $preflightTaskChannel = ""
@@ -5382,6 +5382,11 @@ do {
                         $taskLaunchTier = [string]$launch.tier
                         if ($launch.PSObject.Properties['effort'] -and [string]$launch.effort -in @('low', 'medium', 'high', 'xhigh', 'max')) { $taskLaunchEffort = [string]$launch.effort }
                         if ($launch.PSObject.Properties['model'] -and [string]$launch.model -match '^[A-Za-z0-9._:/@-]{1,128}$') { $taskLaunchModel = [string]$launch.model }
+                        if ($launch.PSObject.Properties['codex'] -and $launch.codex) {
+                            $codexLaunch = $launch.codex
+                            if ($codexLaunch.PSObject.Properties['model'] -and [string]$codexLaunch.model -match '^[A-Za-z0-9._:/@-]{1,128}$') { $taskLaunchCodexModel = [string]$codexLaunch.model }
+                            if ($codexLaunch.PSObject.Properties['effort'] -and [string]$codexLaunch.effort -in @('low', 'medium', 'high', 'xhigh', 'max')) { $taskLaunchCodexEffort = [string]$codexLaunch.effort }
+                        }
                     }
                 }
                 if ($preflightTaskId) {
@@ -5978,6 +5983,17 @@ $mentionsJson
                 $codexSeatArgs += @('-c', "model_instructions_file=$($script:CodexSeatInstructionsFile.Replace('\', '/'))")
             }
             $codexSeatArgs += @('-c', "mcp_servers.moe.env.MOE_WORKER_ID=$WorkerId")
+            # Per-task model/effort (launch.codex hint). An operator pin wins:
+            # --model / settings.models.<role> keeps the model, MOE_CODEX_REASONING_EFFORT
+            # keeps the effort; with no hint, config.toml's model_reasoning_effort applies.
+            $iterCodexModel = ""; $iterCodexEffort = ""
+            if (-not $explicitModel -and $taskLaunchCodexModel) { $iterCodexModel = $taskLaunchCodexModel; $codexSeatArgs += @('-m', $iterCodexModel) }
+            if (-not $env:MOE_CODEX_REASONING_EFFORT -and $taskLaunchCodexEffort) { $iterCodexEffort = $taskLaunchCodexEffort; $codexSeatArgs += @('-c', "model_reasoning_effort=$iterCodexEffort") }
+            if ($taskLaunchTier) {
+                $codexModelLabel = if ($iterCodexModel) { $iterCodexModel } else { 'default' }
+                $codexEffortLabel = if ($iterCodexEffort) { $iterCodexEffort } elseif ($env:MOE_CODEX_REASONING_EFFORT) { $env:MOE_CODEX_REASONING_EFFORT } else { 'xhigh' }
+                Write-Host "[OK] Task tier: $taskLaunchTier (model $codexModelLabel, effort $codexEffortLabel)" -ForegroundColor Green
+            }
             if ($CodexExec) {
                 # Non-interactive exec mode: codex -c <seat overrides> -c approvals_reviewer=user exec -C <project> [--sandbox <mode>] "<prompt>"
                 # Never pass --full-auto here: codex-cli 0.147+ rejects it (`error: unexpected
@@ -6176,7 +6192,7 @@ $mentionsJson
 
         # Model: `-m <model>` ONLY when one is explicit - -Model, then
         # settings.models.<role>, then MOE_GROK_MODEL. $resolvedModel is NOT
-        # used here: its claude-opus-5 per-role fallback is a claude model and
+        # used here: its claude-opus-5-5 per-role fallback is a claude model and
         # must never reach grok; with none of the three set grok picks its own
         # default. `--effort <lvl>` only when MOE_GROK_EFFORT is set.
         $grokModel = ""

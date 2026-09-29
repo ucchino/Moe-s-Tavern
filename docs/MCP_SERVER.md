@@ -192,7 +192,9 @@ Get current project/epic/task context and rails.
 }
 ```
 
-**Role trim.** Without `view`, the payload is trimmed by the caller's role (resolved from `workerId`: team role, else id prefix). A `qa` caller does not get `task.epicSiblings` or `planningNotes` — no QA doc reads them, and together they are ~20% of an average payload. The trimmed response carries `omitted: ["task.epicSiblings", "planningNotes"]` and an `omittedHint`. Every other role, and any caller whose role cannot be resolved, gets the full payload. `view: "full"` returns the complete, untrimmed payload for any role. Both the trimmed default and `"full"` count as having read the context.
+**Role trim.** Without `view`, the payload is trimmed by the caller's role (resolved from `workerId`: team role, else id prefix). A `qa` caller does not get `task.epicSiblings`, `planningNotes` or `routing` — no QA doc reads them, and together they are ~20% of an average payload. A `worker` caller does not get `routing`. The trimmed response carries `omitted` (e.g. `["task.epicSiblings", "planningNotes", "routing"]`) and an `omittedHint`. Architects, governors, and any caller whose role cannot be resolved get the full payload.
+
+**`routing`** is what the architect picks from at `moe.submit_plan`: `models: { claude: [...], codex: [...] }` (each `{ id, use?, tiers? }`, strongest first, first = default), `efforts` (the allowed levels), `lowEffort: { files, efforts, defaultEffort, note }` (the docs/tests-only globs and the levels such a plan may also use) and `tierDefaults.<tier>: { effort, effortFloor, models: { claude, codex } }` (ids the tier allows). `view: "full"` returns the complete, untrimmed payload for any role. Both the trimmed default and `"full"` count as having read the context.
 
 **Resolution order:**
 1. `taskId` param
@@ -279,6 +281,10 @@ Submit an implementation plan. Sets task status to `AWAITING_APPROVAL`.
   workerId?: string,    // Optional; auto-injected by moe-proxy from MOE_WORKER_ID
   steps: { description: string; affectedFiles?: string[]; newFiles?: string[] }[],
   tier?: 'light' | 'standard' | 'heavy',  // launch tier for the worker/QA sessions; omit = plan-size tier
+  effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max',  // only allowed levels are used (default high/xhigh/max;
+                                           // low/medium only for a docs/tests-only plan); omit = default
+  model?: string,                          // Claude model from get_context routing.models.claude; omit = default
+  codexModel?: string,                     // codex model from routing.models.codex; set both when either CLI may claim
   planningNotes?: { approachesConsidered?, codebaseInsights?, risks?, keyFiles? }
 }
 ```
@@ -296,12 +302,13 @@ Submit an implementation plan. Sets task status to `AWAITING_APPROVAL`.
 - **Plan-size gate:** oversized plans are rejected with `CONSTRAINT_VIOLATION` — more than 12 steps or more than 10 *distinct* affected files (union across steps) — with `suggestedAction` pointing at `moe.create_task` ("split the task"). Past the softer thresholds (8 steps / 5 distinct files) the response carries a `warnings: string[]` array instead. Thresholds configurable via `project.json` `settings.taskSizing { warnSteps, maxSteps, warnDistinctFiles, maxDistinctFiles }`.
 - Plan submission refreshes `metrics.plannedStepCount`.
 - **Launch tier:** stores `task.tier` = the requested `tier`, never below the plan-size floor (`light` ≤3 steps and ≤2 distinct files, `standard` within the `taskSizing` warn thresholds, `heavy` past them) and never below the task's existing tier (a re-plan keeps a `qa_reject` escalation). `moe.claim_next_task` turns it into the `launch` hint; see `settings.routing` in `docs/CONFIGURATION.md`.
+- **Launch effort and models:** `effort` is raised to the lowest allowed level (`settings.routing.efforts`, default `high`/`xhigh`/`max`) and to the tier minimum (light/standard `high`, heavy `xhigh`), and never below the task's existing effort; the response then carries `effortRaised: { from, to, reason }`. **Docs/tests-only exception:** when every plan file (`affectedFiles` + `newFiles`) matches `settings.routing.lowEffortFiles`, the task is stored with `lowEffortEligible: true` and the response says `lowEffort: "docs/tests-only: low effort allowed"`; such a task may also use `settings.routing.lowEfforts` (default `low`/`medium`), defaults to `medium` and has no tier minimum. The daemon decides this from the files on every submit, never from the planner. `model` and `codexModel` must be ids in their provider's catalog that the tier allows (the built-in Sonnet 5.5 runs light/standard only), else `INVALID_INPUT` naming the allowed ids. An omitted model keeps a prior pick while the tier still allows it, else the default. The response carries `launch` — the same hint a worker claim will get.
 - **CONTROL mode side effect:** the daemon posts `📋 Plan ready for critique — <title> (<id>)` to `#governors` with the step count, distinct-file count, any size warnings, a size rubric line, and a DoD preview. If at least one registered governor exists, `task.pendingPlanCritique` is set to record who is expected to weigh in. Critique is informational; humans still own approval.
 - **Warn-zone persistence + unsupervised size critique:** warn-zone warnings are persisted as `task.planSizeWarnings` (cleared by a compliant resubmit). With `settings.taskSizing.autoCritique: true`, CONTROL mode, and NO governor online, the daemon auto-blocks a warn-zone plan back to `PLANNING` (verdict recorded as `planCritiqueResult` by `moe-daemon-size-critic`, bounded by the same `critiqueBlockCount` cap as governor blocks; at the cap the task rests in `AWAITING_APPROVAL` with a `🛑 HUMAN DECISION REQUIRED` post). The response's `status` is then `"PLANNING"` and `nextAction` routes to a re-plan via `moe-epic-breakdown`.
 
 **Returns:**
 ```typescript
-{ success: true, taskId, status: "AWAITING_APPROVAL", stepCount, distinctFileCount, newFileCount, tier, planRevision, warnings?: string[], message, nextAction }
+{ success: true, taskId, status: "AWAITING_APPROVAL", stepCount, distinctFileCount, newFileCount, tier, effortRaised?, lowEffort?, launch?, planRevision, warnings?: string[], message, nextAction }
 ```
 - `planRevision` is the revision this submission committed (read from the write's own Task, not a later cache read). It is the token a client sends back as `expectedPlanRevision` when it later approves the plan — see [Plan approval — `expectedPlanRevision` compare-and-swap](#plan-approval--expectedplanrevision-compare-and-swap).
 
@@ -1174,8 +1181,9 @@ With `preferAdjacentInEpic` on (default), candidates in the caller's currently-r
   fileCollision?: Array<{ task: string, files: string[] }>,  // advisory only
   launch?: {                        // WORKING/REVIEW task with a tier and settings.routing not disabled;
     tier: 'light' | 'standard' | 'heavy',  // also on the alreadyAssigned answer (resume relaunch)
-    effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max',
-    model?: string                  // only when settings.routing.<tier>.model is set
+    effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max',  // always an allowed level
+    model: string,                  // claude seats: task.model, else settings.routing.<tier>.model, else the default
+    codex: { model: string, effort } // codex seats: task.codexModel, else the codex default; same effort
   },
   alreadyAssigned?: {               // hasNext: false — you already hold an active task
     taskId: string,
@@ -1887,7 +1895,7 @@ QA rejects a task in REVIEW status, moving it back to WORKING for fixes — or t
   - `reopenCount ≥ maxReopens` (default 3 via `MAX_REOPENS_DEFAULT`; per-task override `task.maxReopens`), OR
   - the **same DoD item has failed ≥2 times** in `failedDodItems[]`.
 - On auto-flip, posts a heads-up to `#architects`; on every rejection, cross-posts `❌ QA rejected ...` to `#governors`.
-- **Tier escalation:** bumps `task.tier` one step (`light` → `standard` → `heavy`, capped) for the next attempt, whether it returns to WORKING or PLANNING; an unset tier starts from the plan-size floor. A hard-cap park keeps its tier.
+- **Launch escalation:** resets `task.model` and `task.codexModel` to their provider defaults (a failed cheap-model attempt is retried on the strongest model), bumps `task.tier` one step (`light` → `standard` → `heavy`, capped) and `task.effort` one allowed level (`high` → `xhigh` → `max`) for the next attempt, whether it returns to WORKING or PLANNING; an unset tier starts from the plan-size floor and an unset effort from the tier default. A hard-cap park keeps its routing.
 - **Closes the QA seat's attempt:** the flip clears `assignedWorkerId` (the hard-cap park writes `null` explicitly), and that write closes the task's `running`/`reconciling` attempts (see **Close on hand-back** under Ownership & Ordering). A daemon restart after the rejection therefore has nothing of the QA seat's to park, and an explicit `moe.claim_next_task` of the returned row succeeds with the next generation.
 
 **Errors:**

@@ -188,14 +188,23 @@ interface ProjectSettings {
     autoCritique?: boolean;
   };
 
-  // Per-tier model/effort for the wrapper's CLI launch, read at claim time into
-  // the claim `launch` hint. Hand-edited only; invalid values are ignored.
+  // Model catalog, allowed efforts and per-tier defaults for the wrapper's CLI
+  // launch, read at claim time into the claim `launch` hint. Hand-edited only;
+  // invalid values are ignored.
   routing?: {
     enabled?: boolean;           // default: true
-    light?: { model?: string; effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' };    // default effort: medium
-    standard?: { model?: string; effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' }; // default effort: high
-    heavy?: { model?: string; effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' };    // default effort: max
-  };                             // no default model — the wrapper keeps its role default
+    // Strongest first per provider; each provider's first entry is its default.
+    // A provider with no entries here keeps the built-in ones (Opus 5.5, Sonnet 5.5;
+    // codex: GPT-6 Astra, GPT-6.1 Sol, GPT-6 Luna).
+    models?: { id: string; provider?: 'claude' | 'codex'; use?: string; tiers?: ('light' | 'standard' | 'heavy')[] }[];
+    efforts?: Effort[];          // allowed levels; default ['high', 'xhigh', 'max']
+    lowEfforts?: Effort[];       // extra levels for a docs/tests-only plan; default ['low', 'medium']
+    lowEffortFiles?: string[];   // globs; a plan whose every file matches is docs/tests-only
+                                 // default ['**/*.md', 'docs/**', '**/*.test.*', '**/*.spec.*', '**/tests/**', '**/__tests__/**']
+    light?: { model?: string; effort?: Effort };    // default effort: high
+    standard?: { model?: string; effort?: Effort }; // default effort: xhigh
+    heavy?: { model?: string; effort?: Effort };    // default effort: max
+  };                             // Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 
   // DEPRECATED — accepted and ignored. Fed the removed task time-budget feature
   // (80%/100% warn + escalate). moe.submit_plan no longer reads it and writes no
@@ -396,6 +405,10 @@ interface Task {
   failedDodItems?: FailedDodItem[];             // Append-only DoD failure log; capped at last 100
   maxReopens?: number;                          // Per-task override of MAX_REOPENS_DEFAULT (3)
   tier?: 'light' | 'standard' | 'heavy';        // Launch tier: submit_plan (floored by plan size), +1 per qa_reject
+  effort?: Effort;                                // Planner's effort (raised to allowed + tier minimum), +1 allowed level per qa_reject
+  lowEffortEligible?: boolean;                    // submit_plan: every plan file matches routing.lowEffortFiles (low/medium allowed)
+  model?: string;                                 // Planner's Claude model (settings.routing.models); qa_reject resets to the default
+  codexModel?: string;                            // Planner's codex model (provider 'codex'); qa_reject resets to the codex default
   priorAttempt?: PriorAttempt;                  // Snapshot from moe.request_replan
   priorHandoffs?: HandoffNote[];                // Newest-first; capped at 20
 

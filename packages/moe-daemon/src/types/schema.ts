@@ -84,18 +84,43 @@ export interface TaskSizingSettings {
 /** Per-task launch tier, ordered light < standard < heavy (see util/routing.ts). */
 export type TaskTier = 'light' | 'standard' | 'heavy';
 
+/** Claude Code `--effort` levels, lowest first. */
+export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
 export interface TierLaunch {
   model?: string;
-  effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  effort?: Effort;
+}
+
+/** CLI family a catalog model runs on. */
+export type ModelProvider = 'claude' | 'codex';
+
+/** One entry of the settings.routing.models catalog. */
+export interface RoutingModel {
+  id: string;
+  /** Default 'claude'. Each provider's first entry is its default model. */
+  provider?: ModelProvider;
+  /** One-line guidance shown to the planner. */
+  use?: string;
+  /** Tiers this model may run; omitted = every tier. */
+  tiers?: TaskTier[];
 }
 
 /**
- * settings.routing: maps a task's tier to the model/effort the wrapper
- * launches its CLI with. Unset tiers default to effort medium/high/max and
- * no model (the wrapper keeps its role default model).
+ * settings.routing: the model catalog, allowed efforts and per-tier launch
+ * defaults for the wrapper's CLI. Unset tiers default to effort high/xhigh/max; the model is
+ * the planner's pick, else the tier's model, else models[0].
  */
 export interface RoutingSettings {
   enabled?: boolean; // default: true
+  /** Effort levels the fleet may run at (others are raised to the next allowed). Default: ['high', 'xhigh', 'max']. */
+  efforts?: Effort[];
+  /** Extra levels a docs/tests-only plan may use. Default: ['low', 'medium']. */
+  lowEfforts?: Effort[];
+  /** Globs: a plan whose every file matches is docs/tests-only. Default: md, docs/**, *.test.*, *.spec.*, tests/, __tests__/. */
+  lowEffortFiles?: string[];
+  /** Model catalog, strongest first per provider. Default: Opus 5.5 + Sonnet 5.5 (claude), GPT-6 Astra/6.1 Sol/6 Luna (codex). */
+  models?: RoutingModel[];
   light?: TierLaunch;
   standard?: TierLaunch;
   heavy?: TierLaunch;
@@ -712,6 +737,14 @@ export interface Task {
    * and bumped one step by each qa_reject. Drives the claim `launch` hint.
    */
   tier?: TaskTier;
+  /** Planner's effort pick at submit_plan (floored by tier); qa_reject bumps it. */
+  effort?: Effort;
+  /** Set at submit_plan when every plan file matches settings.routing.lowEffortFiles: low/medium effort allowed. */
+  lowEffortEligible?: boolean;
+  /** Planner's claude model pick from settings.routing.models; qa_reject resets it to the default. */
+  model?: string;
+  /** Planner's codex model pick (provider 'codex'); qa_reject resets it to the codex default. */
+  codexModel?: string;
   /**
    * Snapshot of the prior implementation attempt — populated by
    * `moe.request_replan` when work is shipped back to PLANNING.

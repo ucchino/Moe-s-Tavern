@@ -23,9 +23,9 @@ import type { ProviderDescriptor } from './providerDescriptor.js';
  * test views moe-agent.sh.
  */
 const BASH_LAUNCH_INTERACTIVE =
-  '"$COMMAND_BIN" "${COMMAND_ARGV[@]}" -c "model_instructions_file=$CODEX_SEAT_INSTRUCTIONS_FILE" -c "mcp_servers.moe.env.MOE_WORKER_ID=$WORKER_ID" -C "$PROJECT" "$SHORT_PROMPT"';
+  '"$COMMAND_BIN" "${COMMAND_ARGV[@]}" -c "model_instructions_file=$CODEX_SEAT_INSTRUCTIONS_FILE" -c "mcp_servers.moe.env.MOE_WORKER_ID=$WORKER_ID" "${CODEX_TASK_ARGS[@]}" -C "$PROJECT" "$SHORT_PROMPT"';
 const BASH_LAUNCH_EXEC =
-  '"$COMMAND_BIN" "${COMMAND_ARGV[@]}" -c "model_instructions_file=$CODEX_SEAT_INSTRUCTIONS_FILE" -c "mcp_servers.moe.env.MOE_WORKER_ID=$WORKER_ID" "${CODEX_EXEC_OVERRIDES[@]}" exec --json -C "$PROJECT" "${CODEX_SANDBOX_ARGS[@]}" "$SHORT_PROMPT"';
+  '"$COMMAND_BIN" "${COMMAND_ARGV[@]}" -c "model_instructions_file=$CODEX_SEAT_INSTRUCTIONS_FILE" -c "mcp_servers.moe.env.MOE_WORKER_ID=$WORKER_ID" "${CODEX_TASK_ARGS[@]}" "${CODEX_EXEC_OVERRIDES[@]}" exec --json -C "$PROJECT" "${CODEX_SANDBOX_ARGS[@]}" "$SHORT_PROMPT"';
 const PS_LAUNCH_INTERACTIVE = '& $Command @CommandArgs @codexSeatArgs -C "$projectPath" "$shortPrompt"';
 const PS_LAUNCH_EXEC =
   '& $Command @CommandArgs @codexSeatArgs @codexExecOverrides exec --json -C "$projectPath" @codexSandboxArgs "$shortPrompt"';
@@ -443,7 +443,7 @@ export const CODEX_DESCRIPTOR: ProviderDescriptor = {
           // bash (the two launches are the others); pin it so a change there
           // cannot slip past the per-mode launch literals.
           emitterEvidence: {
-            bash: ['-c "mcp_servers.moe.env.MOE_WORKER_ID=$WORKER_ID" "${CODEX_EXEC_OVERRIDES[@]}" exec --json -C "$PROJECT" "${CODEX_SANDBOX_ARGS[@]}" --help 2>&1'],
+            bash: ['-c "mcp_servers.moe.env.MOE_WORKER_ID=$WORKER_ID" "${CODEX_TASK_ARGS[@]}" "${CODEX_EXEC_OVERRIDES[@]}" exec --json -C "$PROJECT" "${CODEX_SANDBOX_ARGS[@]}" --help 2>&1'],
             powershell: ['(& $Command @CommandArgs @codexSeatArgs @codexExecOverrides exec --json -C "$projectPath" @codexSandboxArgs --help 2>&1 | Out-String)'],
           },
         },

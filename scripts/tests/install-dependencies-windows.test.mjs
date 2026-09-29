@@ -169,7 +169,7 @@ test('Windows package manager failure stops at the failed dependency', options, 
   assert.doesNotMatch(result.calls, /Git.Git|Anthropic.ClaudeCode/);
 });
 
-for (const [agent, pkg] of [['codex', '@openai/codex'], ['gemini', '@google/gemini-cli'], ['grok', '@xai-official/grok']]) {
+for (const [agent, pkg] of [['codex', '@openai/codex'], ['grok', '@xai-official/grok']]) {
   test(`Windows selected ${agent} installs its official npm package`, options, t => {
     const result = run(t, { args: `-AgentCommand ${agent}` });
     pass(result);
@@ -177,6 +177,12 @@ for (const [agent, pkg] of [['codex', '@openai/codex'], ['gemini', '@google/gemi
     assert.doesNotMatch(result.calls, /Anthropic.ClaudeCode/);
   });
 }
+
+test('Windows selected gemini expects agy to be installed', options, t => {
+  const result = run(t, { args: '-AgentCommand gemini', tools: ['node', 'npm', 'git', 'agy'] });
+  pass(result);
+  assert.doesNotMatch(result.calls, /npm install.*gemini/);
+});
 
 test('Windows npm agent installation failure is not reported as ready', options, t => {
   const result = run(t, { args: '-AgentCommand codex', fail: '@openai/codex' });

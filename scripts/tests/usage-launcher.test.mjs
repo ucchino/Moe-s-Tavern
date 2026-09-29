@@ -132,5 +132,29 @@ process.exitCode=23;`;
       assert.equal(r.receipts[0].launchId, r.receipts[1].launchId);
       assert.equal(r.receipts[0].requestedEffort, 'xhigh');
     });
+    test(`${engine}: Codex launch ${withResult ? 'applies the per-task model/effort hint' : 'without a hint keeps the default argv'}`, t => {
+      const text = source(ext);
+      const hint = withResult;
+      const fakeSource = `import assert from 'node:assert/strict';
+const a=process.argv.slice(2);
+${hint ? `assert.equal(a[a.indexOf('-m')+1], 'gpt-6.1-sol'); assert.ok(a.includes('model_reasoning_effort=medium'));`
+    : `assert.ok(!a.includes('-m')); assert.ok(!a.some(x => /^model_reasoning_effort=/.test(x)));`}
+process.exitCode=23;`;
+      let body;
+      if (ext === 'ps1') {
+        const hintBlock = between(text, '            # Per-task model/effort (launch.codex hint).', '            if ($CodexExec) {');
+        const pipeline = between(text, "                Start-MoeUsageReceipt 'codex' 'headless'", '            } else {');
+        body = `$Command=$env:MOE_TEST_NODE\n$CommandArgs=@($env:MOE_TEST_FAKE)\n$codexSeatArgs=@()\n$codexExecOverrides=@()\n$codexSandboxArgs=@()\n$shortPrompt='pointer'\n$explicitModel=''\n$taskLaunchTier='${hint ? 'light' : ''}'\n$taskLaunchCodexModel='${hint ? 'gpt-6.1-sol' : ''}'\n$taskLaunchCodexEffort='${hint ? 'medium' : ''}'\n${hintBlock}\n${pipeline}\nWrite-Output "CHILD_EXIT=$script:CliExitCode"`;
+      } else {
+        const hintBlock = between(text, '        # Per-task model/effort (launch.codex hint).', '        if [ "$CODEX_EXEC" = true ]; then');
+        const pipeline = between(text, '            start_moe_usage_receipt codex headless', '            set -e');
+        body = `COMMAND_BIN="$MOE_TEST_NODE"\nCOMMAND_ARGV=("$MOE_TEST_FAKE")\nCODEX_SEAT_INSTRUCTIONS_FILE=stable\nCODEX_EXEC_OVERRIDES=()\nCODEX_SANDBOX_ARGS=()\nSHORT_PROMPT=pointer\nEXPLICIT_MODEL=\nTASK_LAUNCH_TIER=${hint ? 'light' : ''}\nTASK_LAUNCH_CODEX_MODEL=${hint ? 'gpt-6.1-sol' : ''}\nTASK_LAUNCH_CODEX_EFFORT=${hint ? 'medium' : ''}\n${hintBlock}\n${pipeline}\nprintf 'CHILD_EXIT=%s' "$CLI_EXIT_CODE"`;
+      }
+      const r = run(t, ext, engine, body, { fakeSource });
+      assert.match(r.stdout, /CHILD_EXIT=23/);
+      if (hint) assert.match(r.stdout, /Task tier: light \(model gpt-6\.1-sol, effort medium\)/);
+      assert.equal(r.receipts[0].requestedModel ?? null, hint ? 'gpt-6.1-sol' : null);
+      assert.equal(r.receipts[0].requestedEffort, hint ? 'medium' : 'xhigh');
+    });
   }
 }

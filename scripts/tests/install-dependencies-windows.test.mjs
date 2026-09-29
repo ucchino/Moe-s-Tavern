@@ -39,7 +39,7 @@ Set-Content -LiteralPath $global:logFile -Value ''
 function Get-Command {
     param([string]$Name, $ErrorAction)
     # Hosted runners can expose JDK17 through PATH even with JAVA_HOME cleared.
-    if ($Name -in @('node', 'npm', 'git', 'claude', 'codex', 'gemini', 'grok', 'winget', 'javac')) {
+    if ($Name -in @('node', 'npm', 'git', 'claude', 'codex', 'gemini', 'agy', 'grok', 'winget', 'javac')) {
         if ($Name -in $global:availableTools) { return [pscustomobject]@{ Name = $Name; Source = $Name } }
         return $null
     }
@@ -50,6 +50,7 @@ function git { $global:LASTEXITCODE = 0; 'git version 2.50.0' }
 function claude { $global:LASTEXITCODE = 0; 'claude 2.0.0' }
 function codex { $global:LASTEXITCODE = 0; 'codex 1.0.0' }
 function gemini { $global:LASTEXITCODE = 0; 'gemini 1.0.0' }
+function agy { $global:LASTEXITCODE = 0; 'agy 1.0.0' }
 function grok { $global:LASTEXITCODE = 0; 'grok 1.0.0' }
 function Set-ItemProperty {
     param([string]$LiteralPath, [string]$Name, [string]$Value)
@@ -169,7 +170,7 @@ test('Windows package manager failure stops at the failed dependency', options, 
   assert.doesNotMatch(result.calls, /Git.Git|Anthropic.ClaudeCode/);
 });
 
-for (const [agent, pkg] of [['codex', '@openai/codex'], ['gemini', '@google/gemini-cli'], ['grok', '@xai-official/grok']]) {
+for (const [agent, pkg] of [['codex', '@openai/codex'], ['grok', '@xai-official/grok']]) {
   test(`Windows selected ${agent} installs its official npm package`, options, t => {
     const result = run(t, { args: `-AgentCommand ${agent}` });
     pass(result);
@@ -177,6 +178,12 @@ for (const [agent, pkg] of [['codex', '@openai/codex'], ['gemini', '@google/gemi
     assert.doesNotMatch(result.calls, /Anthropic.ClaudeCode/);
   });
 }
+
+test('Windows selected gemini expects agy to be installed', options, t => {
+  const result = run(t, { args: '-AgentCommand gemini', tools: ['node', 'npm', 'git', 'agy'] });
+  pass(result);
+  assert.doesNotMatch(result.calls, /npm install.*gemini/);
+});
 
 test('Windows npm agent installation failure is not reported as ready', options, t => {
   const result = run(t, { args: '-AgentCommand codex', fail: '@openai/codex' });

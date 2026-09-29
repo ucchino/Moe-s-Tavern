@@ -5,7 +5,7 @@ import { MAX_REOPENS_DEFAULT } from '../types/schema.js';
 import { missingRequired, invalidInput, notFound, invalidState } from '../util/errors.js';
 import { assertWorkerOwns, assertContextFetched } from '../util/enforcement.js';
 import { resetPlanStepsToPending } from '../util/reopen.js';
-import { bumpTier, isTier, planSizeFloor } from '../util/routing.js';
+import { bumpEffort, bumpTier, defaultModel, isEffort, isTier, planSizeFloor, tierEffort } from '../util/routing.js';
 import { recordReview, resolveReviewedCandidate } from '../state/reviewStore.js';
 
 const VALID_ISSUE_TYPES: QAIssueType[] = [
@@ -245,10 +245,23 @@ export function qaRejectTool(_state: StateManager): ToolDefinition {
         // rejectionReason/rejectionDetails, not resume on a stale context stamp.
         contextFetchedBy: [],
         metrics: nextMetrics,
-        // Escalate the launch tier one step for the next attempt (worker fix or
-        // re-plan). A parked task waits for a human, so it keeps its tier.
+        // Escalate the next attempt (worker fix or re-plan): models back to each
+        // provider's strongest so a failed cheap-model attempt isn't retried on
+        // the same model, then tier and effort up one step. A parked task waits
+        // for a human, so it keeps its routing.
         ...(!parkedForHuman
-          ? { tier: bumpTier(isTier(task.tier) ? task.tier : planSizeFloor(task.implementationPlan ?? [], state.project?.settings)) }
+          ? (() => {
+              const settings = state.project?.settings;
+              const tier = isTier(task.tier) ? task.tier : planSizeFloor(task.implementationPlan ?? [], settings);
+              const low = task.lowEffortEligible === true;
+              const effort = isEffort(task.effort) ? task.effort : tierEffort(tier, settings, low);
+              return {
+                tier: bumpTier(tier),
+                effort: bumpEffort(effort, settings, low),
+                model: defaultModel(settings),
+                codexModel: defaultModel(settings, 'codex'),
+              };
+            })()
           : {}),
         // Park for a human: clear the assignee (so no worker owns it) and flag
         // it so the QA claim pool skips it. Status stays REVIEW — inert, not

@@ -102,8 +102,14 @@ function Install-MoeAgent([string]$Name) {
         if ($Name -eq 'claude') {
             # Anthropic's native Windows package: https://code.claude.com/docs/en/setup
             Install-MoeWinGetPackage 'Anthropic.ClaudeCode'
+        } elseif ($Name -eq 'gemini') {
+            Write-Host "For gemini mode, Antigravity CLI (agy) is required."
+            Write-Host "Please ensure Antigravity is installed."
+            Assert-MoeCommand "agy"
+            Write-Host "Agent CLI ready. Sign in to your account once: agy --prompt-interactive `"login`""
+            return
         } else {
-            $packages = @{ codex = '@openai/codex'; gemini = '@google/gemini-cli'; grok = '@xai-official/grok' }
+            $packages = @{ codex = '@openai/codex'; grok = '@xai-official/grok' }
             $package = $packages[$Name]
             Write-Host "Installing $Name..."
             npm install --global $package | Out-Host
@@ -112,7 +118,7 @@ function Install-MoeAgent([string]$Name) {
         }
     }
     Assert-MoeCommand $Name
-    $loginCommand = @{ claude = 'claude auth login'; codex = 'codex login'; gemini = 'gemini'; grok = 'grok login' }[$Name]
+    $loginCommand = @{ claude = 'claude auth login'; codex = 'codex login'; grok = 'grok login' }[$Name]
     Write-Host "Agent CLI ready. Sign in to your account once: $loginCommand"
 }
 

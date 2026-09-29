@@ -119,13 +119,25 @@ describe('qa_reject bounded escalation', () => {
       { statuses: ['WORKING'], workerId: 'w-1' }, state,
     ) as { hasNext: boolean; launch?: unknown };
     expect(claim.hasNext).toBe(true);
-    expect(claim.launch).toEqual({ tier: 'standard', effort: 'high' });
+    expect(claim.launch).toEqual({ tier: 'standard', effort: 'xhigh', model: 'claude-opus-5-5', codex: { model: 'gpt-6-astra', effort: 'xhigh' } });
 
     // A resumed holder gets the same hint on the alreadyAssigned answer.
     const again = await claimNextTaskTool(state).handler(
       { statuses: ['WORKING'], workerId: 'w-1', taskId: undefined }, state,
     ) as { launch?: unknown };
-    expect(again.launch).toEqual({ tier: 'standard', effort: 'high' });
+    expect(again.launch).toEqual({ tier: 'standard', effort: 'xhigh', model: 'claude-opus-5-5', codex: { model: 'gpt-6-astra', effort: 'xhigh' } });
+  });
+
+  it('escalates a cheap-model attempt: both models back to their defaults, effort one allowed level up', async () => {
+    setupMoe(); writeEpic();
+    writeTask({ tier: 'light', effort: 'xhigh', model: 'claude-sonnet-5-5', codexModel: 'gpt-6-luna' });
+    await state.load();
+    await qaRejectTool(state).handler({ taskId: 'task-1', reason: 'fix it', workerId: 'qa-a' }, state);
+    const task = state.getTask('task-1');
+    expect(task?.tier).toBe('standard');
+    expect(task?.effort).toBe('max');
+    expect(task?.model).toBe('claude-opus-5-5');
+    expect(task?.codexModel).toBe('gpt-6-astra');
   });
 
   it('sets an unset tier from the plan-size floor before bumping; a parked task keeps its tier', async () => {

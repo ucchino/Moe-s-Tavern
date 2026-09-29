@@ -1,6 +1,6 @@
 import type { ToolDefinition } from './index.js';
 import type { StateManager } from '../state/StateManager.js';
-import type { ProjectSettings } from '../types/schema.js';
+import type { Effort, ProjectSettings, TaskStatus } from '../types/schema.js';
 import { MAX_CRITIQUE_BLOCKS_DEFAULT } from '../types/schema.js';
 import { checkPlanRails } from '../util/rails.js';
 import { notFound, invalidState, invalidInput, MoeError, MoeErrorCode } from '../util/errors.js';
@@ -8,7 +8,10 @@ import { assertWorkerOwns } from '../util/enforcement.js';
 import { normalizeAffectedFiles, findMissingPaths, pathKey } from '../util/affectedFiles.js';
 import { cachedPlanRef, findCachedPlanPaths, type CachedPlanPaths } from '../util/cachedPlanPaths.js';
 import { assessPlanSize } from '../util/planSize.js';
-import { isTier, maxTier, planSizeFloor } from '../util/routing.js';
+import {
+  allowedEfforts, clampEffort, EFFORTS, effortFloor, isEffort, isLowEffortPlan, isTier, maxEffort, maxTier, modelsForTier,
+  planSizeFloor, resolveLaunch,
+} from '../util/routing.js';
 
 /** Upper bound on a single plan step's description — a guard against runaway payloads, not a style limit. */
 export const MAX_STEP_DESCRIPTION_CHARS = 10000;
@@ -140,6 +143,19 @@ export function submitPlanTool(_state: StateManager): ToolDefinition {
           enum: ['light', 'standard', 'heavy'],
           description: 'How much model/effort the worker and QA sessions get. light = a mechanical, one-concern change; standard = normal work; heavy = cross-cutting or subtle. Omit to let the daemon pick from plan size; the daemon never goes below the plan-size tier.'
         },
+        effort: {
+          type: 'string',
+          enum: ['low', 'medium', 'high', 'xhigh', 'max'],
+          description: 'Reasoning effort for the worker and QA sessions, picked for how hard the work is: high = routine work, xhigh = normal work and most coding, max = subtle or cross-cutting work. Only the allowed levels in get_context routing.efforts are used (default high, xhigh, max); anything else, or anything below the tier minimum (light/standard: high, heavy: xhigh), is raised and the response says so. Exception: a docs/tests-only plan (every file matches routing.lowEffort.files, decided from the plan) may also use low or medium, defaults to medium and has no tier minimum. Omit for the default (light high, standard xhigh, heavy max).'
+        },
+        model: {
+          type: 'string',
+          description: 'Claude model id for the worker and QA sessions, from get_context routing.models.claude (each entry says what it is for and which tiers it may run). Omit for the default. Rejected when the id is not in that catalog or not allowed for the task tier.'
+        },
+        codexModel: {
+          type: 'string',
+          description: 'Codex model id for the same sessions when a codex seat claims the task, from get_context routing.models.codex. You do not know which CLI will claim the task, so you may set both model and codexModel. Same validation as model.'
+        },
         planningNotes: {
           type: 'object',
           description: 'Architect reasoning notes for the worker (approaches considered, codebase insights, risks, key files)',
@@ -163,6 +179,9 @@ export function submitPlanTool(_state: StateManager): ToolDefinition {
           taskId: string;
           workerId?: string;
           tier?: unknown;
+          effort?: unknown;
+          model?: unknown;
+          codexModel?: unknown;
           steps: { description: string; affectedFiles?: string[]; newFiles?: string[] }[];
           planningNotes?: {
             approachesConsidered?: string;
@@ -372,10 +391,46 @@ export function submitPlanTool(_state: StateManager): ToolDefinition {
         // never below a tier a qa_reject escalation already raised (re-plan).
         const floor = planSizeFloor(normalizedSteps, project.settings);
         const tier = maxTier(maxTier(isTier(params.tier) ? params.tier : floor, floor), task.tier);
+        // Effort: the planner's pick, raised to an allowed level and the tier
+        // minimum, never below an effort a qa_reject escalation already set.
+        // Omitted = the tier default. Only a docs/tests-only plan (decided from
+        // its files, not the planner's word) may go below 'high'; a re-plan
+        // recomputes it.
+        if (params.effort !== undefined && !isEffort(params.effort)) {
+          throw invalidInput('effort', `must be one of ${EFFORTS.join(', ')}`);
+        }
+        const lowEffortEligible = isLowEffortPlan(normalizedSteps, project.settings);
+        const requestedEffort = params.effort as Effort | undefined;
+        let effort = requestedEffort
+          ? maxEffort(
+              clampEffort(requestedEffort, project.settings, lowEffortEligible),
+              effortFloor(tier, project.settings, lowEffortEligible)
+            )
+          : undefined;
+        if (task.effort) {
+          effort = clampEffort(effort ? maxEffort(effort, task.effort) : task.effort, project.settings, lowEffortEligible);
+        }
+        // Models (claude + codex): each must be its provider's catalog id allowed
+        // for this tier. Omitted keeps a prior pick only while still allowed.
+        const pickModel = (field: 'model' | 'codexModel', provider: 'claude' | 'codex'): string | undefined => {
+          const allowed = modelsForTier(tier, project.settings, provider);
+          const requested = params[field];
+          if (requested !== undefined && (typeof requested !== 'string' || !allowed.includes(requested))) {
+            throw invalidInput(field, `${JSON.stringify(requested)} is not allowed for a ${tier} task; allowed ${provider} models: ${allowed.join(', ')} (catalog: settings.routing.models)`);
+          }
+          const prior = task[field];
+          return (requested as string | undefined) ?? (prior && allowed.includes(prior) ? prior : undefined);
+        };
+        const model = pickModel('model', 'claude');
+        const codexModel = pickModel('codexModel', 'codex');
 
         const updatePayload: Record<string, unknown> = {
           implementationPlan,
           tier,
+          effort,
+          model,
+          codexModel,
+          lowEffortEligible: lowEffortEligible || undefined,
           // Persist warn-zone size warnings so boards/governors see size pressure
           // without reading chat; a compliant resubmit clears them.
           planSizeWarnings: planSize.warnings.length > 0 ? planSize.warnings : undefined,
@@ -555,6 +610,25 @@ export function submitPlanTool(_state: StateManager): ToolDefinition {
           distinctFileCount: planSize.distinctFileCount,
           newFileCount: exemptKeys.size,
           tier,
+          ...(effort && requestedEffort && effort !== requestedEffort
+            ? {
+                effortRaised: {
+                  from: requestedEffort,
+                  to: effort,
+                  reason: lowEffortEligible
+                    ? `raised to an allowed level (${allowedEfforts(project.settings, true).join(', ')})`
+                    : `raised to an allowed level (${allowedEfforts(project.settings).join(', ')}) and the ${tier}-task minimum; only docs/tests-only plans may run below that`,
+                },
+              }
+            : {}),
+          ...(lowEffortEligible ? { lowEffort: 'docs/tests-only: low effort allowed' } : {}),
+          ...(() => {
+            const launch = resolveLaunch(
+              { tier, effort, model, codexModel, lowEffortEligible, status: finalStatus as TaskStatus },
+              project.settings
+            );
+            return launch ? { launch } : {};
+          })(),
           ...(pathValidation ? { pathValidation } : {}),
           ...(planSize.warnings.length > 0 ? { warnings: planSize.warnings } : {}),
           message,

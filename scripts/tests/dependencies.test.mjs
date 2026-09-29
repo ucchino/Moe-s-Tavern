@@ -99,13 +99,13 @@ case "$tool" in
     chmod +x "$package/bin/node" "$package/bin/npm"
     ;;
   javac) [ -f "$MOE_FIXTURE/ready/javac" ] || exit 127; echo 'javac 17.0.99' ;;
-  git|python3|claude|codex|gemini|tmux)
+  git|python3|claude|codex|gemini|agy|tmux)
     [ -f "$MOE_FIXTURE/ready/$tool" ] || exit 127
     echo fixture
     ;;
 esac
 `;
-  for (const name of ['uname', 'id', 'sudo', 'apt-get', 'dnf', 'brew', 'sha256sum', 'shasum', 'node', 'npm', 'curl', 'tar', 'javac', 'git', 'python3', 'claude', 'codex', 'gemini', 'tmux']) {
+  for (const name of ['uname', 'id', 'sudo', 'apt-get', 'dnf', 'brew', 'sha256sum', 'shasum', 'node', 'npm', 'curl', 'tar', 'javac', 'git', 'python3', 'claude', 'codex', 'gemini', 'agy', 'tmux']) {
     fs.writeFileSync(path.join(dir, 'bin', name), stub, { mode: 0o755 });
   }
   return dir;
@@ -195,7 +195,7 @@ test('a persistent 404 on the Node archive fails actionably without extracting a
   assert.doesNotMatch(log(dir), /tar -xzf/);
 });
 
-for (const [agent, pkg] of [['claude', '@anthropic-ai/claude-code'], ['codex', '@openai/codex'], ['gemini', '@google/gemini-cli']]) {
+for (const [agent, pkg] of [['claude', '@anthropic-ai/claude-code'], ['codex', '@openai/codex']]) {
   test(`missing ${agent} installs its official package in a user prefix`, t => {
     const dir = fixture(t, ['git', 'python3', 'curl', 'tar', 'node', 'npm']);
     passed(run(dir, agent));
@@ -204,6 +204,12 @@ for (const [agent, pkg] of [['claude', '@anthropic-ai/claude-code'], ['codex', '
     assert.equal(fs.existsSync(path.join(dir, `profile/.local/share/moe/npm/bin/${agent}`)), true);
   });
 }
+
+test('gemini mode expects agy', t => {
+  const dir = fixture(t, ['git', 'python3', 'curl', 'tar', 'node', 'npm', 'agy']);
+  passed(run(dir, 'gemini'));
+  assert.doesNotMatch(log(dir), /npm install/);
+});
 
 test('none skips agent installation and profile setup is idempotent', t => {
   const dir = fixture(t);

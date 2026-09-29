@@ -10,6 +10,9 @@ import {
   writeClaudeHook,
 } from './claudeHook.js';
 
+// Same probe as heartbeatStop.test.ts: the PowerShell cases need a runnable pwsh.
+const hasPwsh = spawnSync('pwsh', ['-NoProfile', '-Command', 'exit 0']).status === 0;
+
 function bashCandidates(): string[] {
   const candidates: string[] = [];
   if (process.env.MOE_TEST_BASH) candidates.push(process.env.MOE_TEST_BASH);
@@ -196,7 +199,7 @@ describe('writeClaudeHook', () => {
     }, 30000);
   });
 
-  describe('PowerShell hook script', () => {
+  describe.skipIf(!hasPwsh)('PowerShell hook script', () => {
     function writePsHook(projectPath: string, moeCallContent?: string): string {
       const hooksDir = path.join(projectPath, '.claude', 'hooks');
       fs.mkdirSync(hooksDir, { recursive: true });

@@ -9,13 +9,19 @@ import { unmetDependsOn } from '../state/dependencyUnblock.js';
 import { listCandidatesForTask } from '../state/candidateStore.js';
 import { contextStatus } from '../util/contextStatus.js';
 import { resolveWorkerRole } from '../util/workerRole.js';
+import { routingInfo } from '../util/routing.js';
 
 /**
  * Sections dropped from a QA caller's default payload: no QA doc or skill reads
  * them (QA reviews the delivered bytes against DoD and plan), and together they
  * are ~20% of an average payload. view:"full" returns them for any role.
  */
-const QA_OMITTED = ['task.epicSiblings', 'planningNotes'];
+// Default-view trims per role (view:"full" is never trimmed). routing is the
+// planner's model/effort catalog: only architects and governors choose from it.
+const ROLE_OMITTED: Record<string, string[]> = {
+  qa: ['task.epicSiblings', 'planningNotes', 'routing'],
+  worker: ['routing'],
+};
 
 /** Newest commits surfaced per task (the ledger itself is capped at MAX_COMMITS_PER_TASK). */
 const MAX_CONTEXT_COMMITS = 20;
@@ -67,7 +73,7 @@ import {
 export function getContextTool(_state: StateManager): ToolDefinition {
   return {
     name: 'moe.get_context',
-    description: 'Read the working context for one task: project settings and global/epic/task rails, the epic, the task (plan and steps, definitionOfDone, recent comments, verification, commits), its assigned worker, recent chat, planningNotes and a nextAction hint. Read-only. Fetch it after claiming and before planning, implementing or reviewing. Trimmed per role by default (a QA caller does not get task.epicSiblings or planningNotes; the response lists what was left out in `omitted`); pass view:"full" for everything, from any role. view:"status" is a lighter delivery poll that does not count as having read the context.',
+    description: 'Read the working context for one task: project settings and global/epic/task rails, the epic, the task (plan and steps, definitionOfDone, recent comments, verification, commits), its assigned worker, recent chat, planningNotes and a nextAction hint. Read-only. Fetch it after claiming and before planning, implementing or reviewing. Includes `routing` (the model catalog, efforts and tier defaults the architect picks from at submit_plan). Trimmed per role by default (a QA caller does not get task.epicSiblings, planningNotes or routing; a worker does not get routing; the response lists what was left out in `omitted`); pass view:"full" for everything, from any role. view:"status" is a lighter delivery poll that does not count as having read the context.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -307,8 +313,10 @@ export function getContextTool(_state: StateManager): ToolDefinition {
       const taskCandidates = task ? listCandidatesForTask(state, task.id) : [];
       const currentCandidate = taskCandidates.length > 0 ? taskCandidates[taskCandidates.length - 1] : undefined;
       // Role trim applies only to the default view; view:"full" is never gated by role.
-      const trimForQa = params.view !== 'full' && Boolean(task) && Boolean(callerWorkerId)
-        && resolveWorkerRole(state, callerWorkerId) === 'qa';
+      const callerRole = params.view !== 'full' && task && callerWorkerId
+        ? resolveWorkerRole(state, callerWorkerId) : undefined;
+      const omitted = (callerRole && ROLE_OMITTED[callerRole]) || [];
+      const trimForQa = callerRole === 'qa';
 
       return {
         project: {
@@ -453,9 +461,10 @@ export function getContextTool(_state: StateManager): ToolDefinition {
             }
           : {}),
         ...(trimForQa ? {} : { planningNotes }),
+        ...(omitted.includes('routing') ? {} : { routing: routingInfo(state.project.settings) }),
         ...(nextAction ? { nextAction } : {}),
-        ...(trimForQa
-          ? { omitted: QA_OMITTED, omittedHint: 'Trimmed for the qa role. Call moe.get_context with view:"full" to include these sections.' }
+        ...(omitted.length > 0
+          ? { omitted, omittedHint: `Trimmed for the ${callerRole} role. Call moe.get_context with view:"full" to include these sections.` }
           : {}),
       };
     }

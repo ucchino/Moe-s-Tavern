@@ -669,7 +669,7 @@ describe('moe.get_context role trim', () => {
     const r = await call({ workerId: 'qa-1' });
     expect(r.task.epicSiblings).toBeUndefined();
     expect(r).not.toHaveProperty('planningNotes');
-    expect(r.omitted).toEqual(['task.epicSiblings', 'planningNotes']);
+    expect(r.omitted).toEqual(['task.epicSiblings', 'planningNotes', 'routing']);
     expect(r.omittedHint).toContain('view:"full"');
   });
 
@@ -687,5 +687,20 @@ describe('moe.get_context role trim', () => {
     const unknown = await call({ workerId: 'human-1' });
     expect(withoutNextAction(worker)).toEqual(withoutNextAction(unknown));
     expect(worker.task.epicSiblings).toHaveLength(1);
+  });
+
+  it('shows the routing catalog to an architect, not to a worker by default', async () => {
+    await setup();
+    const architect = await call({ workerId: 'architect-1' });
+    expect(architect.routing.models.claude.map((m: { id: string }) => m.id)).toEqual(['claude-opus-5-5', 'claude-sonnet-5-5']);
+    expect(architect.routing.models.codex[0].id).toBe('gpt-6-astra');
+    expect(architect.routing.efforts).toEqual(['high', 'xhigh', 'max']);
+    expect(architect.routing.tierDefaults.heavy).toEqual({
+      effort: 'max', effortFloor: 'xhigh', models: { claude: ['claude-opus-5-5'], codex: ['gpt-6-astra'] },
+    });
+    const worker = await call({ workerId: 'worker-1' });
+    expect(worker).not.toHaveProperty('routing');
+    expect(worker.omitted).toEqual(['routing']);
+    expect((await call({ workerId: 'worker-1', view: 'full' })).routing).toBeDefined();
   });
 });

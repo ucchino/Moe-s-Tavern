@@ -99,13 +99,13 @@ case "$tool" in
     chmod +x "$package/bin/node" "$package/bin/npm"
     ;;
   javac) [ -f "$MOE_FIXTURE/ready/javac" ] || exit 127; echo 'javac 17.0.99' ;;
-  git|python3|claude|codex|gemini|tmux)
+  git|python3|claude|codex|gemini|agy|tmux)
     [ -f "$MOE_FIXTURE/ready/$tool" ] || exit 127
     echo fixture
     ;;
 esac
 `;
-  for (const name of ['uname', 'id', 'sudo', 'apt-get', 'dnf', 'brew', 'sha256sum', 'shasum', 'node', 'npm', 'curl', 'tar', 'javac', 'git', 'python3', 'claude', 'codex', 'gemini', 'tmux']) {
+  for (const name of ['uname', 'id', 'sudo', 'apt-get', 'dnf', 'brew', 'sha256sum', 'shasum', 'node', 'npm', 'curl', 'tar', 'javac', 'git', 'python3', 'claude', 'codex', 'gemini', 'agy', 'tmux']) {
     fs.writeFileSync(path.join(dir, 'bin', name), stub, { mode: 0o755 });
   }
   return dir;

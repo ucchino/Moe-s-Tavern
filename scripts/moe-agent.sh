@@ -317,7 +317,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --no-loop                Run once and exit (no polling)"
             echo "  -t, --team NAME          Team name for parallel same-role agents"
             echo "  --codex-exec             Use codex exec mode (non-interactive, headless)"
-            echo "  --gemini-exec            Use gemini headless mode (non-interactive, --yolo)"
+            echo "  --gemini-exec            Use gemini headless mode (non-interactive, --dangerously-skip-permissions)"
             echo "  --grok-exec              Use grok headless mode (non-interactive, --prompt-file --yolo)"
             echo "  --interactive            Force Claude into interactive TUI (default: on for architect/governor)"
             echo "  --no-interactive         Force one-shot --print mode (default for worker/qa; fresh CLI per task)"
@@ -6899,9 +6899,12 @@ $PROMPT_BODY"
         rm -f "$CODEX_SEAT_INSTRUCTIONS_FILE" 2>/dev/null || true
         rm -f "$CODEX_SESSION_CONTEXT_FILE" 2>/dev/null || true
     elif [ "$CLI_TYPE" = "gemini" ]; then
-        # Check gemini is available
+        if [ "$COMMAND_BIN" = "gemini" ] && command -v agy &> /dev/null; then
+            COMMAND_BIN="agy"
+        fi
+        # Check agy is available
         if ! command -v "$COMMAND_BIN" &> /dev/null; then
-            echo -e "${RED}[ERROR]${NC} Gemini command not found: $COMMAND_BIN. Install Gemini CLI first (npm install -g @google/gemini-cli or see https://github.com/google-gemini/gemini-cli)."
+            echo -e "${RED}[ERROR]${NC} Antigravity command not found: $COMMAND_BIN. Please ensure Antigravity CLI (agy) is installed."
             exit 1
         fi
 
@@ -6938,12 +6941,12 @@ $PROMPT_BODY"
 
         if [ "$GEMINI_EXEC" = true ]; then
             # Non-interactive headless mode
-            echo -e "Starting Gemini (headless, --yolo)..."
+            echo -e "Starting Gemini (headless, --dangerously-skip-permissions)..."
             echo ""
-            echo "Command: $COMMAND_BIN ${COMMAND_ARGV[*]} --prompt \"<prompt>\" --yolo"
+            echo "Command: $COMMAND_BIN ${COMMAND_ARGV[*]} --print \"<prompt>\" --dangerously-skip-permissions"
             set +e
 
-            (cd "$PROJECT" && "$COMMAND_BIN" "${COMMAND_ARGV[@]}" --prompt "$SHORT_PROMPT" --yolo)
+            (cd "$PROJECT" && "$COMMAND_BIN" "${COMMAND_ARGV[@]}" --print "$SHORT_PROMPT" --dangerously-skip-permissions)
 
             CLI_EXIT_CODE=$?
 

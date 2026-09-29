@@ -215,11 +215,18 @@ moe_install_dependencies() {
         moe_select_java17 || { moe_dependency_error 'JDK 17 is still unavailable after installation.'; return 1; }
     fi
     if [ "$agent" != none ] && ! moe_has_tool "$agent"; then
-        local package
-        case "$agent" in claude) package=@anthropic-ai/claude-code ;; codex) package=@openai/codex ;; gemini) package=@google/gemini-cli ;; esac
-        npm install --global --prefix "$HOME/.local/share/moe/npm" "$package" || return
-        hash -r
-        moe_has_tool "$agent" || { moe_dependency_error "$agent is still unavailable after installation."; return 1; }
+        if [ "$agent" = "gemini" ]; then
+            if ! moe_has_tool "agy"; then
+                moe_dependency_error "Antigravity CLI (agy) is required for gemini mode but not found."
+                return 1
+            fi
+        else
+            local package
+            case "$agent" in claude) package=@anthropic-ai/claude-code ;; codex) package=@openai/codex ;; esac
+            npm install --global --prefix "$HOME/.local/share/moe/npm" "$package" || return
+            hash -r
+            moe_has_tool "$agent" || { moe_dependency_error "$agent is still unavailable after installation."; return 1; }
+        fi
     fi
     # Keep the user's npm configuration intact. Only this installer uses a user prefix
     # when its current global prefix is unwritable (or Node was installed by Moe).

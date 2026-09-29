@@ -1,4 +1,4 @@
-﻿param(
+param(
     [ValidateSet("architect", "worker", "qa", "governor")]
     [string]$Role = "worker",
 
@@ -34,7 +34,7 @@
     # Use codex exec mode (non-interactive, headless) instead of interactive TUI
     [switch]$CodexExec,
 
-    # Use gemini headless mode (non-interactive, --yolo) instead of interactive
+    # Use gemini headless mode (non-interactive, --dangerously-skip-permissions) instead of interactive
     [switch]$GeminiExec,
 
     # Force grok into headless mode (non-interactive, --prompt-file --yolo).
@@ -4894,7 +4894,7 @@ if ($cliType -eq "codex") {
 }
 if ($cliType -eq "gemini") {
     if ($GeminiExec) {
-        Write-Host "Gemini mode: headless (--yolo)"
+        Write-Host "Gemini mode: headless (--dangerously-skip-permissions)"
     } else {
         Write-Host "Gemini mode: interactive"
     }
@@ -6114,10 +6114,14 @@ $mentionsJson
             }
         }
     } elseif ($cliType -eq "gemini") {
-        # Check gemini is available
+        if ($Command -eq "gemini") {
+            if (Get-Command agy -ErrorAction SilentlyContinue) {
+                $Command = "agy"
+            }
+        }
         $geminiCheck = Get-Command $Command -ErrorAction SilentlyContinue
         if (-not $geminiCheck) {
-            Write-Error "Gemini command not found: $Command. Install Gemini CLI first (npm install -g @google/gemini-cli)."
+            Write-Error "Antigravity command not found: $Command. Please ensure Antigravity CLI (agy) is installed."
             exit 1
         }
 
@@ -6156,10 +6160,10 @@ $mentionsJson
         try {
             if ($GeminiExec) {
                 # Non-interactive headless mode
-                Write-Host "Command: $Command --prompt `"<prompt>`" --yolo"
+                Write-Host "Command: $Command --print `"<prompt>`" --dangerously-skip-permissions"
                 try {
                     Push-Location $projectPath
-                    & $Command @CommandArgs --prompt "$shortPrompt" --yolo
+                    & $Command @CommandArgs --print "$shortPrompt" --dangerously-skip-permissions
                     $script:CliExitCode = $LASTEXITCODE
                 } finally { Pop-Location }
             } else {

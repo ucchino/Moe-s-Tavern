@@ -1,14 +1,18 @@
 // =============================================================================
 // Attribution tiers — the SINGLE definition of which paths a task has
-// ASSERTED (positive evidence: committed regardless of the pre-task baseline)
-// versus merely PLANNED (committed only when changed since the baseline).
-// Shared by moe.get_commit_scope (what the wrapper stages) and moe.get_context
-// (`declaredPaths`) so the two can never disagree.
+// ASSERTED (positive evidence of ownership) versus merely PLANNED (committed
+// only when changed since the baseline). Shared by moe.get_commit_scope (what
+// the wrapper stages) and moe.get_context (`declaredPaths`) so the two can
+// never disagree.
 //
 // ASSERTED = ⋃_{steps COMPLETED}(modifiedFiles ?? affectedFiles)   ← exactly
 //            what completeTask.ts folds into task.filesModified today
 //          ∪ task.filesModified ∪ task.declaredFiles ∪ task.touchedFiles
 //          ∪ ⋃ task.commits[].paths minus that commit's inferredPaths
+// DECLARED = task.declaredFiles (moe.declare_files) ⊆ ASSERTED: the wrapper
+//            commits these regardless of the pre-task baseline. Every other
+//            ASSERTED path is history, and the wrapper commits it only when
+//            its dirty bytes are this task's (MOE_ATTR_ASSERTED_FOREIGN).
 // PLANNED  = (⋃_{ALL steps}(affectedFiles ∪ newFiles ∪ modifiedFiles)
 //            ∪ task.inferredPaths) − ASSERTED
 //
@@ -101,7 +105,7 @@ export function nonInferredCommitPaths(commit: TaskCommit): string[] {
 }
 
 export interface TaskPathTiers {
-  /** Positive evidence — committed regardless of the pre-task baseline. */
+  /** Positive evidence of ownership; only its `collectDeclaredPaths` part is committed regardless of the baseline. */
   asserted: string[];
   /** Plan-declared only — committed only when changed since the baseline. */
   planned: string[];
@@ -118,6 +122,15 @@ export function collectAssertedPaths(task: Task): string[] {
     set.addAll(nonInferredCommitPaths(commit));
   }
   return set.values();
+}
+
+/**
+ * The explicit moe.declare_files part of ASSERTED, normalized the same way.
+ * The wrapper commits these regardless of its baseline; the rest of ASSERTED
+ * only when this task produced the dirty bytes.
+ */
+export function collectDeclaredPaths(task: Pick<Task, 'declaredFiles'>): string[] {
+  return new PathSet().addAll(task.declaredFiles).values();
 }
 
 /** Both tiers for one task; `planned` never overlaps `asserted`. */

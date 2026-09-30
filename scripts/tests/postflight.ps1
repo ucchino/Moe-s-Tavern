@@ -96,6 +96,11 @@ try {
     #                                    union read from the other records
     #   FAKE_SCOPE_PEERS_ACTIVE=1        another worker is live (livePeerIds)
     #   FAKE_SCOPE_ASSIGNED              assignedWorkerId reported by the scope
+    #   FAKE_SCOPE_DECLARED_FIELD=1      serve `declared` (the record's
+    #                                    declaredFiles) as the current daemon
+    #                                    does; unset models a daemon from
+    #                                    before the field (every asserted
+    #                                    path lands regardless of baseline)
     # Side effects: chat_send -> .moe/messages/<channel>.jsonl, heartbeat ->
     # .moe/heartbeat.log, record_commit -> .moe/record_commit.jsonl.
     $fakeProxy = Join-Path $tempRoot 'fake-proxy.js'
@@ -552,6 +557,7 @@ switch (tool) {
       assignedWorkerId: process.env.FAKE_SCOPE_ASSIGNED !== undefined ? process.env.FAKE_SCOPE_ASSIGNED : (args.workerId || ''),
       assigneeAlive: true,
       asserted, planned,
+      ...(process.env.FAKE_SCOPE_DECLARED_FIELD === '1' ? { declared: rec ? strList(rec.declaredFiles) : [] } : {}),
       touchedFiles: rec ? strList(rec.touchedFiles) : [],
       inferredPaths: rec ? strList(rec.inferredPaths) : [],
       unattributedPaths: rec ? strList(rec.unattributedPaths) : [],
@@ -2217,6 +2223,9 @@ finally{if(!process.env.MOE_KEEP_FROZEN_FIXTURE)for(const d of [root,wrapperTmp]
                 # already dirty at baseline and never changed is still committed
                 # (declaration wins); a PLANNED-only path in the same state is
                 # pre-existing debris and skipped with MOE_ATTR_PREEXISTING.
+                # The scope carries no `declared` field here: this pins a daemon
+                # from before it, whose asserted paths all land regardless of
+                # the baseline (scenario L2 is the current daemon).
                 Write-Host '[scenario L] asserted-unchanged commits; planned-unchanged is pre-existing'
                 $scopeLDir = Join-Path $tempRoot 'scope-l'
                 $scopeLPlan = @(@{ stepId = 's1'; title = 'planned step'; status = 'PENDING'; affectedFiles = @('planned.txt') })
@@ -2236,6 +2245,69 @@ finally{if(!process.env.MOE_KEEP_FROZEN_FIXTURE)for(const d of [root,wrapperTmp]
                 }
                 $scopeScenariosRun++
                 Write-Host '[scenario L] ok'
+
+                # Scenario L2 — a path asserted only by HISTORY (filesModified,
+                # completed steps, prior commits, touchedFiles; never
+                # moe.declare_files) is a claim on the path, not on whatever
+                # bytes sit in it. On 2026-09-30 a foreign uncommitted edit to a
+                # security guard landed under the task whose delivered
+                # filesModified named it, from a session that never touched the
+                # file. Same fixture as postflight.sh: two sessions of one task,
+                # checkpoints off, no TOOL witness (a codex seat):
+                #   foreign.txt   filesModified, dirty before both sessions,
+                #                 never touched: MOE_ATTR_ASSERTED_FOREIGN
+                #   declared.txt  declare_files, dirty before both sessions,
+                #                 never touched: lands (explicit contract)
+                #   carried.txt   edited by session 1, which exits without a
+                #                 landing: a C row, landed by session 2
+                #   own.txt       edited by session 2: lands
+                Write-Host '[scenario L2] history-only asserted bytes this task did not produce stay out; declared, carried and own bytes land'
+                $scopeL2Dir = Join-Path $tempRoot 'scope-l2'
+                New-ScopeProject $scopeL2Dir @('foreign.txt', 'declared.txt', 'carried.txt', 'own.txt') -Settings @{ checkpointCommits = $false } -Status 'WORKING'
+                $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+                [System.IO.File]::WriteAllText((Join-Path $scopeL2Dir '.moe\tasks\task-postflight.json'),
+                    '{"id":"task-postflight","title":"Postflight smoke","status":"WORKING","filesModified":["foreign.txt","declared.txt","carried.txt","own.txt"],"declaredFiles":["declared.txt"]}', $utf8NoBom)
+                foreach ($f in @('foreign.txt', 'declared.txt', 'carried.txt', 'own.txt')) { Set-Content -Path (Join-Path $scopeL2Dir $f) -Value 'base' }
+                & git -C $scopeL2Dir add foreign.txt declared.txt carried.txt own.txt .moe/tasks/task-postflight.json 2>$null | Out-Null
+                & git -C $scopeL2Dir commit -qm l2-base 2>$null | Out-Null
+                $l2Base = ((& git -C $scopeL2Dir rev-parse HEAD 2>$null) -join '').Trim()
+                Set-Content -Path (Join-Path $scopeL2Dir 'foreign.txt') -Value 'foreign-edit'
+                Set-Content -Path (Join-Path $scopeL2Dir 'declared.txt') -Value 'stranded-work'
+                $l2Cmd = Join-Path $tempRoot 'l2-edit.cmd'
+                Set-Content -Path $l2Cmd -Encoding ASCII -Value "@echo off`r`necho session edit>> `"%MOE_PROJECT_PATH%\%FAKE_L2_EDIT%`"`r`nexit /b 0`r`n"
+                $scopeL2Out1 = Join-Path $tempRoot 'scope-l2-1.out'
+                $scopeL2Out2 = Join-Path $tempRoot 'scope-l2-2.out'
+                $env:FAKE_SCOPE_DECLARED_FIELD = '1'
+                try {
+                    $env:FAKE_L2_EDIT = 'carried.txt'
+                    Assert-ScopeRun 'L2' (Invoke-GateWrapper $scopeL2Dir $scopeL2Out1 -Status 'WORKING' -Command $l2Cmd) $scopeL2Out1
+                    if (((& git -C $scopeL2Dir rev-parse HEAD 2>$null) -join '').Trim() -ne $l2Base) { throw 'SCENARIO L2 FAILED: checkpoints are off: session 1 must not commit' }
+                    $l2Bl = [System.IO.File]::ReadAllText((Join-Path $scopeL2Dir '.git\moe\baseline\task-postflight.tsv'))
+                    $l2Rows = @($l2Bl -split "`n" | ForEach-Object { $_.TrimEnd("`r") })
+                    $l2Carried = ((& git -C $scopeL2Dir hash-object carried.txt 2>$null) -join '').Trim()
+                    if ($l2Rows -notcontains "C`t$l2Carried`tcarried.txt") { Write-Host $l2Bl; throw "SCENARIO L2 FAILED: session 1's own unlanded edit must travel as a C row" }
+                    if (@($l2Rows | Where-Object { $_ -match "^C`t[^`t]*`t(foreign|declared)\.txt$" }).Count -gt 0) { Write-Host $l2Bl; throw 'SCENARIO L2 FAILED: bytes session 1 did not produce must never be carried' }
+                    $env:FAKE_L2_EDIT = 'own.txt'
+                    Assert-ScopeRun 'L2' (Invoke-GateWrapper $scopeL2Dir $scopeL2Out2 -Command $l2Cmd) $scopeL2Out2
+                } finally {
+                    Remove-Item Env:FAKE_SCOPE_DECLARED_FIELD -ErrorAction SilentlyContinue
+                    Remove-Item Env:FAKE_L2_EDIT -ErrorAction SilentlyContinue
+                }
+                $l2Text = Get-Content -Raw -Path $scopeL2Out2
+                if ((Get-CommittedPaths $scopeL2Dir) -ne 'carried.txt declared.txt own.txt') {
+                    Write-Host $l2Text
+                    throw "SCENARIO L2 FAILED: expected exactly the declared, carried and own paths; got [$(Get-CommittedPaths $scopeL2Dir)]"
+                }
+                if (-not $l2Text.Contains('[skip] foreign.txt MOE_ATTR_ASSERTED_FOREIGN')) { Write-Host $l2Text; throw 'SCENARIO L2 FAILED: expected [skip] foreign.txt MOE_ATTR_ASSERTED_FOREIGN' }
+                if (@(& git -C $scopeL2Dir status --porcelain 2>$null) -notcontains ' M foreign.txt' -or
+                    (Get-Content -Raw -Path (Join-Path $scopeL2Dir 'foreign.txt')).Trim() -ne 'foreign-edit') { throw 'SCENARIO L2 FAILED: foreign.txt must stay modified-and-unstaged with its bytes untouched' }
+                if (@(& git -C $scopeL2Dir log --format=%H "$l2Base..HEAD" -- foreign.txt 2>$null | Where-Object { $_ }).Count -gt 0) { throw 'SCENARIO L2 FAILED: foreign.txt reached a commit' }
+                if (-not (Get-RecordCommitLines $scopeL2Dir | Where-Object { $_.Contains('"foreign.txt"') -and $_.Contains('MOE_ATTR_ASSERTED_FOREIGN') })) {
+                    Get-RecordCommitLines $scopeL2Dir | ForEach-Object { Write-Host $_ }
+                    throw 'SCENARIO L2 FAILED: the skip must reach the ledger'
+                }
+                $scopeScenariosRun++
+                Write-Host '[scenario L2] ok'
 
                 # Scenario M — a lingering baseline (the previous session never
                 # landed: Ctrl+C, window close, crash) is recovered at the NEXT
@@ -2655,6 +2727,56 @@ if (process.env.SIBLING_TOUCH_RECORD === '1') {
                 }
                 $scopeScenariosRun++
                 Write-Host '[scenario M3] ok'
+
+                # Scenario M4 — crash rescue under scenario L2's history rule.
+                # A session died without landing; its baseline's P rows are ITS
+                # pre-flight snapshot. own-r.txt was clean then, so its dirty
+                # bytes are that session's own edit and the recovery must still
+                # land them; foreign-r.txt was already dirty with the bytes it
+                # still has: someone else's, never landed. Same as postflight.sh.
+                Write-Host "[scenario M4] a recovery lands the dead session's own bytes, never history-only bytes that predate it"
+                $scopeM4Dir = Join-Path $tempRoot 'scope-m4'
+                New-ScopeProject $scopeM4Dir @('ignored.txt')
+                [System.IO.File]::WriteAllText((Join-Path $scopeM4Dir '.moe\tasks\task-resume.json'),
+                    '{"id":"task-resume","title":"Resume smoke","status":"WORKING","filesModified":["own-r.txt","foreign-r.txt"]}', (New-Object System.Text.UTF8Encoding($false)))
+                Set-Content -Path (Join-Path $scopeM4Dir 'own-r.txt') -Value 'base'
+                Set-Content -Path (Join-Path $scopeM4Dir 'foreign-r.txt') -Value 'base'
+                & git -C $scopeM4Dir add own-r.txt foreign-r.txt .moe/tasks/task-resume.json 2>$null | Out-Null
+                & git -C $scopeM4Dir commit -qm m4-base 2>$null | Out-Null
+                $m4Base = ((& git -C $scopeM4Dir rev-parse HEAD 2>$null) -join '').Trim()
+                Set-Content -Path (Join-Path $scopeM4Dir 'foreign-r.txt') -Value 'foreign-edit'
+                $m4BlDir = Join-Path $scopeM4Dir '.git\moe\baseline'
+                New-Item -ItemType Directory -Force -Path $m4BlDir | Out-Null
+                $m4Lines = @("#moe-baseline v1 task=task-resume at=2026-09-29T20:17:00Z head=$m4Base landed=0 session=worker-dead@2026-09-29T20:17:00Z")
+                foreach ($kind in @('B', 'P')) {
+                    foreach ($p in @('.moe/project.json', '.moe/messages/chan-general.jsonl', 'foreign-r.txt')) {
+                        $h = ((& git -C $scopeM4Dir hash-object -- $p 2>$null) -join '').Trim()
+                        $m4Lines += "$kind`t$h`t$p"
+                    }
+                }
+                [System.IO.File]::WriteAllText((Join-Path $m4BlDir 'task-resume.tsv'), (($m4Lines -join "`n") + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+                Set-Content -Path (Join-Path $scopeM4Dir 'own-r.txt') -Value 'own-edit'
+                $scopeM4Out = Join-Path $tempRoot 'scope-m4.out'
+                $env:FAKE_CLAIM_MODE = 'resume'
+                $env:FAKE_SCOPE_DECLARED_FIELD = '1'
+                try {
+                    Assert-ScopeRun 'M4' (Invoke-GateWrapper $scopeM4Dir $scopeM4Out -Status 'WORKING' -WorkerId 'worker-scope-m4') $scopeM4Out
+                } finally {
+                    Remove-Item Env:FAKE_CLAIM_MODE -ErrorAction SilentlyContinue
+                    Remove-Item Env:FAKE_SCOPE_DECLARED_FIELD -ErrorAction SilentlyContinue
+                }
+                $m4Text = Get-Content -Raw -Path $scopeM4Out
+                if ($m4Text -notlike '*MOE_CHECKPOINT_RECOVERED task=task-resume sha=*') { Write-Host $m4Text; throw 'SCENARIO M4 FAILED: expected MOE_CHECKPOINT_RECOVERED for task-resume' }
+                $m4Sha = (@(& git -C $scopeM4Dir log --format='%H %s' --fixed-strings --grep='Moe-Task: task-resume' 2>$null | Where-Object { $_ -like '* recovered' }) | Select-Object -First 1) -replace ' .*$', ''
+                if (-not $m4Sha -or (Get-CommittedPaths $scopeM4Dir $m4Sha) -ne 'own-r.txt') {
+                    Write-Host $m4Text
+                    throw "SCENARIO M4 FAILED: the recovered checkpoint must carry exactly the dead session's own edit; got [$(if ($m4Sha) { Get-CommittedPaths $scopeM4Dir $m4Sha })]"
+                }
+                if (-not $m4Text.Contains('[skip] foreign-r.txt MOE_ATTR_ASSERTED_FOREIGN')) { Write-Host $m4Text; throw 'SCENARIO M4 FAILED: expected [skip] foreign-r.txt MOE_ATTR_ASSERTED_FOREIGN' }
+                if (@(& git -C $scopeM4Dir log --format=%H "$m4Base..HEAD" -- foreign-r.txt 2>$null | Where-Object { $_ }).Count -gt 0 -or
+                    @(& git -C $scopeM4Dir status --porcelain 2>$null) -notcontains ' M foreign-r.txt') { throw 'SCENARIO M4 FAILED: foreign-r.txt must never be committed and must stay modified-and-unstaged' }
+                $scopeScenariosRun++
+                Write-Host '[scenario M4] ok'
 
                 # Scenario N — plumbing keeps the shared index intact: a peer's
                 # pre-staged entry survives (B under plumbing) AND the landed
@@ -3464,8 +3586,8 @@ else {
                 # A harness that silently generated zero scenarios exits 0 and
                 # reads as green.
                 Write-Host "commit-scope scenarios run: $scopeScenariosRun"
-                if ($scopeScenariosRun -ne 31) {
-                    throw "Expected 31 commit-scope scenarios (A-V, K2, M2, M3, P2, X-Z, AA, AB); ran $scopeScenariosRun"
+                if ($scopeScenariosRun -ne 33) {
+                    throw "Expected 33 commit-scope scenarios (A-V, K2, L2, M2, M3, M4, P2, X-Z, AA, AB); ran $scopeScenariosRun"
                 }
 
                 $gateFailCommits = [int](& git -C $gateFailDir rev-list --count HEAD 2>$null)

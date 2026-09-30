@@ -2141,6 +2141,8 @@ $script:MoeToolWritten = @{}
 $script:MoeToolPending = [hashtable]::new([StringComparer]::Ordinal)
 $script:MoeToolSettled = [hashtable]::new([StringComparer]::Ordinal)
 $script:MoeToolHarvestSaturated = $false
+# This session's pre-flight P rows (Invoke-MoePreflightBaseline); $null = none.
+$script:MoePreflightEvidence = $null
 
 function Get-MoePathKey([string]$Path) {
     if ($script:MoeCaseFoldPaths) { return $Path.ToLowerInvariant() }
@@ -2436,10 +2438,19 @@ function Get-MoeBaselinePath([string]$GitDir, [string]$TaskId) {
 # recovery landing, or a landing that found no baseline
 # (Get-MoeBaselineLandedFlag). A header with no session= (older twin) belongs
 # to nobody. Twin: baseline_path / baseline_landed_flag.
+# Evidence for MOE_ATTR_ASSERTED_FOREIGN (older readers skip both kinds):
+# `P<TAB><blob|D><TAB><path>` = dirty at that session's pre-flight and not this
+# task's own -- the snapshot a recovery landing judges its bytes against (no P
+# rows at all = a baseline an older twin wrote: every byte counts as changed,
+# as before). `C<TAB><blob|D><TAB><path>` = this task's own bytes a session
+# left unlanded (importee-held, contested, checkpoints off); the next
+# pre-flight reads them as the task's, not as foreign dirt, and drops the rows.
 function Read-MoeBaseline([string]$Path) {
     if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return $null }
     $b = @{}
     $u = @{}
+    $pre = @{}
+    $carry = @{}
     $head = ''
     $at = ''
     $landed = $false
@@ -2464,14 +2475,16 @@ function Read-MoeBaseline([string]$Path) {
             $k = Get-MoePathKey $p
             if ($kind -eq 'B') { $b[$k] = @{ Path = $p; Blob = $blob } }
             elseif ($kind -eq 'U') { $u[$k] = @{ Path = $p; Blob = $blob } }
+            elseif ($kind -ceq 'P') { $pre[$k] = @{ Path = $p; Blob = $blob } }
+            elseif ($kind -ceq 'C') { $carry[$k] = @{ Path = $p; Blob = $blob } }
         }
     } catch {
         return $null
     }
-    return @{ Head = $head; At = $at; B = $b; U = $u; Landed = $landed; Session = $session }
+    return @{ Head = $head; At = $at; B = $b; U = $u; P = $pre; C = $carry; Landed = $landed; Session = $session }
 }
 
-function Write-MoeBaseline([string]$Path, [string]$TaskId, [string]$Head, [hashtable]$B, [hashtable]$U, [int]$Landed = 0, [string]$Session = '') {
+function Write-MoeBaseline([string]$Path, [string]$TaskId, [string]$Head, [hashtable]$B, [hashtable]$U, [int]$Landed = 0, [string]$Session = '', [hashtable]$P = $null, [hashtable]$C = $null) {
     if (-not $Path) { return $false }
     try {
         $dir = Split-Path -Parent $Path
@@ -2481,6 +2494,8 @@ function Write-MoeBaseline([string]$Path, [string]$TaskId, [string]$Head, [hasht
         [void]$sb.Append("#moe-baseline v1 task=$TaskId at=$at head=$Head landed=$Landed session=$Session`n")
         if ($B) { foreach ($k in ($B.Keys | Sort-Object)) { $r = $B[$k]; [void]$sb.Append("B`t$($r.Blob)`t$($r.Path)`n") } }
         if ($U) { foreach ($k in ($U.Keys | Sort-Object)) { $r = $U[$k]; [void]$sb.Append("U`t$($r.Blob)`t$($r.Path)`n") } }
+        if ($P) { foreach ($k in ($P.Keys | Sort-Object)) { $r = $P[$k]; [void]$sb.Append("P`t$($r.Blob)`t$($r.Path)`n") } }
+        if ($C) { foreach ($k in ($C.Keys | Sort-Object)) { $r = $C[$k]; [void]$sb.Append("C`t$($r.Blob)`t$($r.Path)`n") } }
         $tmp = "$Path.tmp"
         [System.IO.File]::WriteAllText($tmp, $sb.ToString(), (New-Object System.Text.UTF8Encoding($false)))
         Move-Item -LiteralPath $tmp -Destination $Path -Force
@@ -2542,13 +2557,31 @@ function Get-MoeBaselineLandedFlag($Bl, [string]$Sid, [bool]$Recovered) {
 # with no landing) so the next pre-flight does not replay this session's edits
 # as a "recovered" checkpoint the operator turned off. A sibling's deliberate
 # exit must not mark another session's baseline landed, so the flag goes
-# through Get-MoeBaselineLandedFlag. Twin: baseline_mark_landed.
-function Set-MoeBaselineLanded([string]$GitDir, [string]$TaskId, [string]$Sid) {
+# through Get-MoeBaselineLandedFlag. Twin: baseline_mark_landed. $Own (the
+# session's own bytes, left dirty on purpose) becomes the C rows its next
+# session lands; $null keeps the C rows the baseline has.
+function Set-MoeBaselineLanded([string]$GitDir, [string]$TaskId, [string]$Sid, $Own = $null) {
     $p = Get-MoeBaselinePath $GitDir $TaskId
     if (-not $p -or -not (Test-Path -LiteralPath $p)) { return }
     $bl = Read-MoeBaseline $p
     if ($null -eq $bl) { return }
-    Write-MoeBaseline $p $TaskId $bl.Head $bl.B $bl.U (Get-MoeBaselineLandedFlag $bl $Sid $false) $bl.Session | Out-Null
+    $carry = if ($null -ne $Own) { Get-MoeCarryRows $Own @() } else { $bl.C }
+    Write-MoeBaseline $p $TaskId $bl.Head $bl.B $bl.U (Get-MoeBaselineLandedFlag $bl $Sid $false) $bl.Session $bl.P $carry | Out-Null
+}
+
+# The C rows a baseline rewrite writes: $Own (Resolve-MoeAttribution's Own,
+# Get-MoeOwnPaths) minus the paths this landing committed. Twin:
+# baseline_extra_rows.
+function Get-MoeCarryRows($Own, $LandedPaths) {
+    $landedKeys = @{}
+    foreach ($lp in @($LandedPaths)) { if ($lp) { $landedKeys[(Get-MoePathKey $lp)] = $true } }
+    $carry = @{}
+    foreach ($o in @($Own)) {
+        if ($null -eq $o) { continue }
+        $k = Get-MoePathKey $o.Path
+        if (-not $landedKeys.ContainsKey($k)) { $carry[$k] = @{ Path = $o.Path; Blob = $o.Blob } }
+    }
+    return $carry
 }
 
 # ---- live-session marker ----------------------------------------------------
@@ -2783,7 +2816,7 @@ function Get-MoeTaskDeclaredSets($Task) {
 function Get-MoeDiskScope([string]$TaskId) {
     $scope = @{
         Source = 'disk'; Found = $false; TaskId = $TaskId; Title = ''; Status = ''; ReopenCount = 0
-        AssignedWorkerId = ''; Asserted = @(); Planned = @(); TouchedFiles = @(); InferredPaths = @(); UnattributedPaths = @()
+        AssignedWorkerId = ''; Asserted = @(); Declared = @(); Planned = @(); TouchedFiles = @(); InferredPaths = @(); UnattributedPaths = @()
         PeerDeclared = @{}; LivePeerIds = @(); LivePeerIdsKnown = $false; PeersActive = $true; ForceNever = $true
     }
     $tasksDir = Join-Path $moeDir 'tasks'
@@ -2801,6 +2834,7 @@ function Get-MoeDiskScope([string]$TaskId) {
         $aw = Get-MoeProp $own 'assignedWorkerId'; if ($aw -is [string]) { $scope.AssignedWorkerId = $aw }
         $sets = Get-MoeTaskDeclaredSets $own
         $scope.Asserted = @($sets.Asserted)
+        $scope.Declared = @(Get-MoeStringList (Get-MoeProp $own 'declaredFiles'))
         $scope.Planned = @($sets.Planned)
         $scope.TouchedFiles = @(Get-MoeStringList (Get-MoeProp $own 'touchedFiles'))
         $scope.InferredPaths = @(Get-MoeStringList (Get-MoeProp $own 'inferredPaths'))
@@ -2843,7 +2877,7 @@ function Get-MoeCommitScope([string]$TaskId, [string]$Phase, [string]$Sid) {
     if ($resp -and ($resp -isnot [string]) -and $resp.PSObject.Properties['taskId'] -and $resp.PSObject.Properties['asserted']) {
         $scope = @{
             Source = 'rpc'; Found = $true; TaskId = [string]$resp.taskId; Title = ''; Status = ''; ReopenCount = 0
-            AssignedWorkerId = ''; Asserted = @(); Planned = @(); TouchedFiles = @(); InferredPaths = @(); UnattributedPaths = @()
+            AssignedWorkerId = ''; Asserted = @(); Declared = $null; Planned = @(); TouchedFiles = @(); InferredPaths = @(); UnattributedPaths = @()
             PeerDeclared = @{}; LivePeerIds = @(); LivePeerIdsKnown = $true; PeersActive = $false; ForceNever = $false
         }
         $t = Get-MoeProp $resp 'title'; if ($t -is [string]) { $scope.Title = $t }
@@ -2851,6 +2885,11 @@ function Get-MoeCommitScope([string]$TaskId, [string]$Phase, [string]$Sid) {
         $rc = Get-MoeProp $resp 'reopenCount'; if ($rc) { try { $scope.ReopenCount = [int]$rc } catch {} }
         $aw = Get-MoeProp $resp 'assignedWorkerId'; if ($aw -is [string]) { $scope.AssignedWorkerId = $aw }
         $scope.Asserted = @(Get-MoeStringList (Get-MoeProp $resp 'asserted'))
+        # moe.declare_files, the part of asserted committed regardless of the
+        # baseline. Absent (a daemon older than the field) stays $null, which
+        # keeps that behaviour for every asserted path (sh twin: DECLARED).
+        $declaredProp = $resp.PSObject.Properties['declared']
+        if ($declaredProp -and $declaredProp.Value -is [array]) { $scope.Declared = @(Get-MoeStringList $declaredProp.Value) }
         $scope.Planned = @(Get-MoeStringList (Get-MoeProp $resp 'planned'))
         $scope.TouchedFiles = @(Get-MoeStringList (Get-MoeProp $resp 'touchedFiles'))
         $scope.InferredPaths = @(Get-MoeStringList (Get-MoeProp $resp 'inferredPaths'))
@@ -3207,6 +3246,29 @@ function Get-MoeMissingImportees([hashtable]$Git, [array]$Candidates, [string]$B
     return $out
 }
 
+# This task produced a dirty path's bytes: its session's editing tools wrote
+# them, or they differ from what was already dirty when the session whose
+# bytes land started ($Evidence = that session's P rows, pathKey -> @{Path;
+# Blob}; unlike B, whose blobs can be days older than the session, these are
+# its own pre-flight snapshot). $null evidence (a pre-flight that could not
+# snapshot) fails closed: only TOOL counts. Twin: resolve_attribution own_bytes.
+function Test-MoeOwnBytes([string]$Key, [string]$Blob, [hashtable]$Tool, $Evidence) {
+    if ($Tool -and $Tool.ContainsKey($Key)) { return $true }
+    if ($null -eq $Evidence) { return $false }
+    return (-not $Evidence.ContainsKey($Key)) -or ($Evidence[$Key].Blob -cne $Blob)
+}
+
+# The dirty paths outside the DENY list whose bytes this task can vouch for
+# (Test-MoeOwnBytes). A baseline rewrite carries the unlanded ones to the
+# task's next session as C rows. Twin: resolve_attribution's `own`.
+function Get-MoeOwnPaths([hashtable]$S, [hashtable]$Tool, $Evidence, [string]$Rel, [hashtable]$Settings) {
+    foreach ($k in ($S.Keys | Sort-Object)) {
+        $e = $S[$k]
+        if ((Test-MoeDenyPath $e.Path $e.XY $Rel $Settings) -or -not (Test-MoeOwnBytes $k $e.Blob $Tool $Evidence)) { continue }
+        Write-Output @{ Path = $e.Path; Blob = $e.Blob }
+    }
+}
+
 function Resolve-MoeAttribution {
     param(
         [Parameter(Mandatory = $true)][hashtable]$Git,
@@ -3218,7 +3280,8 @@ function Resolve-MoeAttribution {
         [Parameter(Mandatory = $true)][hashtable]$Settings,
         [Parameter(Mandatory = $true)][string]$TaskId,
         [string]$Mode = 'checkpoint',
-        [string]$PolicyOverride = ''
+        [string]$PolicyOverride = '',
+        $Evidence = $null
     )
     $rel = $Git.Rel
     if ($null -eq $B) { $B = @{} }
@@ -3231,6 +3294,14 @@ function Resolve-MoeAttribution {
 
     $asserted = @{}
     foreach ($p in @($Scope.Asserted)) { $tp = ConvertTo-MoeTopPath $p $rel; if ($tp) { $asserted[(Get-MoePathKey $tp)] = $tp } }
+    # moe.declare_files: the part of ASSERTED committed regardless of the
+    # baseline. $null = a daemon older than the field, which keeps that
+    # behaviour for every ASSERTED path (sh twin: DECLARED).
+    $declared = $null
+    if ($null -ne $Scope.Declared) {
+        $declared = @{}
+        foreach ($p in @($Scope.Declared)) { $tp = ConvertTo-MoeTopPath $p $rel; if ($tp) { $declared[(Get-MoePathKey $tp)] = $true } }
+    }
     $planned = @{}
     foreach ($p in @($Scope.Planned)) { $tp = ConvertTo-MoeTopPath $p $rel; if ($tp) { $k = Get-MoePathKey $tp; if (-not $asserted.ContainsKey($k)) { $planned[$k] = $tp } } }
     $peer = @{}
@@ -3255,6 +3326,8 @@ function Resolve-MoeAttribution {
     $contested = @()
     $foreign = 0
     $excluded = 0
+    $assertedForeign = 0
+    $own = @(Get-MoeOwnPaths $S $Tool $Evidence $rel $Settings)
 
     foreach ($k in ($S.Keys | Sort-Object)) {
         $entry = $S[$k]
@@ -3317,6 +3390,19 @@ function Resolve-MoeAttribution {
                     continue
                 }
             }
+            # Asserted only by history (filesModified, completed steps, prior
+            # commits, touchedFiles -- never declare_files): a claim on the
+            # PATH, not on whatever bytes sit in it now. Bytes that were already
+            # dirty when the session started and are untouched since are
+            # someone else's (2026-09-30: a foreign edit to a delivered file
+            # landed under the task whose filesModified named it) -- skipped,
+            # never staged. Twin: resolve_attribution.
+            if ($null -ne $declared -and $asserted.ContainsKey($k) -and -not $declared.ContainsKey($k) -and -not $isOwnMemory -and
+                -not (Test-MoeOwnBytes $k $blob $Tool $Evidence)) {
+                $skipped += @{ Path = $p; Code = 'MOE_ATTR_ASSERTED_FOREIGN' }
+                $assertedForeign++
+                continue
+            }
             $candidates += @{ Path = $p; Blob = $blob; XY = $entry.XY; Reason = 'ASSERTED'; Inferred = $false }
             continue
         }
@@ -3375,7 +3461,7 @@ function Resolve-MoeAttribution {
         Candidates = @($candidates); Skipped = @($skipped); Unattributed = @($unattributed)
         Missing = @($missing); Contested = @($contested); ForeignCount = $foreign; ExcludedCount = $excluded
         AssertedCount = $asserted.Count; PlannedCount = $planned.Count; ToolCount = $Tool.Count
-        Undeclared = $undeclared
+        Undeclared = $undeclared; Own = @($own); AssertedForeignCount = $assertedForeign
     }
 }
 
@@ -3691,7 +3777,7 @@ function Invoke-MoeRescueRef {
                 $u = if ($bl) { $bl.U } else { @{} }
                 $scope = Get-MoeCommitScope $TaskId 'postflight' $Sid
                 $settings = Read-MoeCommitSettings
-                $Attr = Resolve-MoeAttribution -Git $Git -S $s -B $b -U $u -Tool $script:MoeToolWritten -Scope $scope -Settings $settings -TaskId $TaskId -Mode 'checkpoint' -PolicyOverride 'never'
+                $Attr = Resolve-MoeAttribution -Git $Git -S $s -B $b -U $u -Tool $script:MoeToolWritten -Scope $scope -Settings $settings -TaskId $TaskId -Mode 'checkpoint' -PolicyOverride 'never' -Evidence $script:MoePreflightEvidence
             }
             if ($Attr.Candidates.Count -eq 0) {
                 Write-Host "[rescue] nothing to rescue for task $TaskId (reason=$Reason)." -ForegroundColor Cyan
@@ -4154,12 +4240,23 @@ function Invoke-MoeLanding {
         }
         $scope = Get-MoeCommitScope $TaskId 'postflight' $Sid
         if (-not $Title -and $scope.Title) { $Title = $scope.Title }
-        $attr = Resolve-MoeAttribution -Git $Git -S $S -B $B -U $U -Tool $script:MoeToolWritten -Scope $scope -Settings $Settings -TaskId $TaskId -Mode $Kind -PolicyOverride $policyOverride
+        # MOE_ATTR_ASSERTED_FOREIGN evidence: a recovery lands the crashed
+        # session's bytes against the P rows ITS pre-flight persisted; every
+        # other landing uses the evidence this session's own pre-flight kept in
+        # memory, never the file, which a peer's pre-flight may have rewritten
+        # meanwhile. Twin: run_landing.
+        $evidence = $script:MoePreflightEvidence
+        if ($recovered) { $evidence = if ($bl) { $bl.P } else { $null } }
+        $attr = Resolve-MoeAttribution -Git $Git -S $S -B $B -U $U -Tool $script:MoeToolWritten -Scope $scope -Settings $Settings -TaskId $TaskId -Mode $Kind -PolicyOverride $policyOverride -Evidence $evidence
+        $blP = if ($bl) { $bl.P } else { $null }
         if ($attr.ForeignCount -gt 0) {
             Write-Host "[attribution] $($attr.ForeignCount) pre-session dirty path(s) untouched" -ForegroundColor Cyan
         }
         if ($attr.ExcludedCount -gt 0) {
             Write-Host "[attribution] $($attr.ExcludedCount) excluded path(s) untouched (MOE_ATTR_EXCLUDED: .moe/, tool config, worktrees)" -ForegroundColor Cyan
+        }
+        if ($attr.AssertedForeignCount -gt 0) {
+            Write-Host "[attribution] $($attr.AssertedForeignCount) path(s) this task asserted earlier were already dirty when the session started and are untouched since -- held as MOE_ATTR_ASSERTED_FOREIGN; moe.declare_files them only if those bytes are this task's." -ForegroundColor Yellow
         }
         # Per-path [skip] lines for everything but MOE_ATTR_EXCLUDED (.moe/**
         # and tool config are static and numerous; they get the count above).
@@ -4239,7 +4336,7 @@ function Invoke-MoeLanding {
             }
             $res.Outcome = $outcome
             $res.Code = $code
-            if ($bl) { Write-MoeBaseline $baselinePath $TaskId $bl.Head $B $newU $landedFlag $blSession | Out-Null }
+            if ($bl) { Write-MoeBaseline $baselinePath $TaskId $bl.Head $B $newU $landedFlag $blSession $blP (Get-MoeCarryRows $attr.Own @()) | Out-Null }
             # Any commits the worker made mid-session are already pathspec-scoped
             # and must still reach the remote (today's behaviour for completions).
             if ($Kind -eq 'completion') { $res.Pushed = Push-MoeBranch $Git.Top $res.Branch $Kind $TaskId }
@@ -4349,7 +4446,7 @@ function Invoke-MoeLanding {
                 foreach ($d in $dropped) { Write-Host "[skip] $($d.Path) $($d.Code)" -ForegroundColor Yellow }
                 Write-Host "[info] MOE_COMMIT_NOTHING_TO_COMMIT: task $TaskId — the attributable paths already match $branch." -ForegroundColor Cyan
                 $res.Outcome = 'nothing'; $res.Code = 'MOE_COMMIT_NOTHING_TO_COMMIT'
-                if ($bl) { Write-MoeBaseline $baselinePath $TaskId $bl.Head $B $newU $landedFlag $blSession | Out-Null }
+                if ($bl) { Write-MoeBaseline $baselinePath $TaskId $bl.Head $B $newU $landedFlag $blSession $blP (Get-MoeCarryRows $attr.Own @()) | Out-Null }
                 if ($Kind -eq 'completion') { $res.Pushed = Push-MoeBranch $Git.Top $branch $Kind $TaskId }
                 Send-MoeRecordCommit @{ taskId = $TaskId; outcome = 'nothing'; kind = $Kind; status = $Status; role = $Role; workerId = $WorkerId; sessionId = $Sid; cliExitCode = $CliExit; pushed = $res.Pushed; code = 'MOE_COMMIT_NOTHING_TO_COMMIT'; unattributedPaths = $unattrRecPaths } | Out-Null
                 return $res
@@ -4426,14 +4523,16 @@ function Invoke-MoeLanding {
         Update-MoeSharedIndex $Git.Top $landedPaths | Out-Null
 
 
-        # AFTER SUCCESS: prune landed paths from B, persist U, keep the baseline
-        # until the task is DONE/ARCHIVED.
+        # AFTER SUCCESS: prune landed paths from B (and from P, like the sh
+        # twin's baseline_extra_rows), persist U, keep the baseline until the
+        # task is DONE/ARCHIVED.
         foreach ($p in $landedPaths) { $B.Remove((Get-MoePathKey $p)) }
+        if ($blP) { foreach ($p in $landedPaths) { $blP.Remove((Get-MoePathKey $p)) } }
         if ($Status -eq 'DONE' -or $Status -eq 'ARCHIVED') {
             Remove-MoeBaseline $baselinePath
         } else {
             $head = if ($bl) { $bl.Head } else { $sha }
-            Write-MoeBaseline $baselinePath $TaskId $head $B $newU $landedFlag $blSession | Out-Null
+            Write-MoeBaseline $baselinePath $TaskId $head $B $newU $landedFlag $blSession $blP (Get-MoeCarryRows $attr.Own $landedPaths) | Out-Null
         }
         $res.Outcome = 'committed'
         $res.Sha = $sha
@@ -4639,10 +4738,30 @@ function Invoke-MoePreflightBaseline([hashtable]$Git, [hashtable]$Settings, [str
                 }
             }
         }
+        # This session's P rows (MOE_ATTR_ASSERTED_FOREIGN evidence, see
+        # Read-MoeBaseline): the dirty snapshot minus the C rows, whose bytes a
+        # previous session of this task left as its own. A recovery that ran
+        # above and did not complete hands the crashed session's bytes to THIS
+        # session's landing, as the kept B rows do, so its P rows stay the
+        # evidence instead (a fresh snapshot would read those bytes as
+        # foreign). Twin: preflight_landing step 4.
+        $pre = @{}
+        if ($null -ne $chk.Recovered -and $bl -and -not $bl.Landed) {
+            $pre = $bl.P
+        } else {
+            $carry = if ($bl) { $bl.C } else { @{} }
+            foreach ($k in $sPre.Keys) {
+                if ($carry.ContainsKey($k) -and $carry[$k].Blob -ceq $sPre[$k].Blob) { continue }
+                $pre[$k] = @{ Path = $sPre[$k].Path; Blob = $sPre[$k].Blob }
+            }
+        }
+        # This session's landings judge against this copy, never the file a
+        # peer's pre-flight may rewrite meanwhile (Invoke-MoeLanding, teardown).
+        $script:MoePreflightEvidence = $pre
         $head = ''
         $h = Invoke-MoeGit -Top $Git.Top -GitArgs @('rev-parse', '-q', '--verify', 'HEAD')
         if ($h.Rc -eq 0 -and $h.Out.Count -gt 0) { $head = ($h.Out -join '').Trim() }
-        Write-MoeBaseline $baselinePath $TaskId $head $B $uLocal 0 $Sid | Out-Null
+        Write-MoeBaseline $baselinePath $TaskId $head $B $uLocal 0 $Sid $pre @{} | Out-Null
         # Claim the bytes this baseline arms: a session gets both or neither.
         # This runs on the launch path AND the resume path (a resumed session
         # is exactly as live as a fresh one). A marker already held by a LIVE
@@ -5123,6 +5242,7 @@ do {
     $script:MoeToolPending = [hashtable]::new([StringComparer]::Ordinal)
     $script:MoeToolSettled = [hashtable]::new([StringComparer]::Ordinal)
     $script:MoeToolHarvestSaturated = $false
+    $script:MoePreflightEvidence = $null
     $script:MoeLastLanding = $null
 
     if ($AutoClaim) {
@@ -6743,9 +6863,17 @@ $mentionsJson
             # with no landing) must not arm the recovery checkpoint: mark the
             # baseline landed so the next pre-flight does not land this
             # session's edits as a wip(...) recovered commit the operator
-            # turned off.
+            # turned off. The bytes it leaves dirty on purpose are still this
+            # task's: they travel as C rows so its next session does not read
+            # them as foreign (MOE_ATTR_ASSERTED_FOREIGN). Twin: the same branch
+            # in moe-agent.sh.
             if ($null -eq $moeGit) { $moeGit = Get-MoeGitTop }
-            if ($moeGit) { Set-MoeBaselineLanded $moeGit.GitDir $preflightTaskId $moeSid }
+            if ($moeGit) {
+                $markOwn = $null
+                $markS = Get-MoeDirtySnapshot $moeGit.Top
+                if ($null -ne $markS) { $markOwn = @(Get-MoeOwnPaths $markS $script:MoeToolWritten $script:MoePreflightEvidence $moeGit.Rel $moeSettings) }
+                Set-MoeBaselineLanded $moeGit.GitDir $preflightTaskId $moeSid $markOwn
+            }
         }
         if ($moeMode -ne 'none') {
             if ($null -eq $moeGit) { $moeGit = Get-MoeGitTop }

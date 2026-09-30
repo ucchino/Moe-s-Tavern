@@ -404,8 +404,10 @@ export interface ImplementationStep {
    * Every path the worker created or modified while doing this step, as
    * reported to moe.complete_step. This is the ASSERTED attribution tier: a
    * completed step's `modifiedFiles ?? affectedFiles` is committed by the
-   * wrapper regardless of the pre-task baseline, so omitting it degrades the
-   * task's commit to planned/measured attribution.
+   * wrapper whenever this task produced the path's dirty bytes (bytes already
+   * dirty before the session and untouched since are MOE_ATTR_ASSERTED_FOREIGN;
+   * only moe.declare_files lands regardless of the baseline), so omitting it
+   * degrades the task's commit to planned/measured attribution.
    */
   modifiedFiles?: string[];
   /**

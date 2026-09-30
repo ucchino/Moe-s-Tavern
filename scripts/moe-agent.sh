@@ -2695,7 +2695,7 @@ git_dirty_snapshot() {
     return 0
 }
 
-# ---- baseline TSV: header + B/U rows ----------------------------------------
+# ---- baseline TSV: header + B/U/P/C rows --------------------------------------
 # `#moe-baseline v1 task=<id> at=<iso> head=<sha> landed=<0|1> session=<sid>` then
 # `B\t<blob|D>\t<path>` rows (dirty state presumed foreign) and `U\t<blob>\t<path>`
 # rows (the locally persisted unattributed set). `session` is the Moe-Session id
@@ -2707,6 +2707,13 @@ git_dirty_snapshot() {
 # (baseline_landed_flag). A header with no session= (older twin) belongs to
 # nobody. Written .tmp + rename. Twin: Read-MoeBaseline /
 # Get-MoeBaselineLandedFlag.
+# Evidence for MOE_ATTR_ASSERTED_FOREIGN (older readers skip both kinds):
+# `P\t<blob|D>\t<path>` = dirty at that session's pre-flight and not this
+# task's own -- the snapshot a recovery landing judges its bytes against (no P
+# rows at all = a baseline an older twin wrote: every byte counts as changed,
+# as before). `C\t<blob|D>\t<path>` = this task's own bytes a session left
+# unlanded (importee-held, contested, checkpoints off); the next pre-flight
+# reads them as the task's, not as foreign dirt, and drops the rows.
 baseline_path() {
     printf '%s/moe/baseline/%s.tsv' "$MOE_GITDIR" "$1"
 }
@@ -2733,7 +2740,7 @@ baseline_landed() { # $1 taskId -- 0 when the header says landed=1
     head -n1 "$f" 2>/dev/null | grep -q ' landed=1' 2>/dev/null
 }
 
-baseline_write() { # $1 taskId, $2 head, $3 B rows file, $4 U rows file, $5 landed(0|1), $6 session
+baseline_write() { # $1 taskId, $2 head, $3 B rows file, $4 U rows file, $5 landed(0|1), $6 session, [$7 P/C rows file, verbatim]
     local dir="$MOE_GITDIR/moe/baseline" line
     mkdir -p "$dir" 2>/dev/null || return 1
     local f="$dir/$1.tsv" tmp="$dir/$1.tsv.tmp.$$"
@@ -2748,6 +2755,11 @@ baseline_write() { # $1 taskId, $2 head, $3 B rows file, $4 U rows file, $5 land
             while IFS= read -r line || [ -n "$line" ]; do
                 [ -n "$line" ] && printf 'U\t%s\n' "$line"
             done < "$4"
+        fi
+        if [ -n "${7:-}" ] && [ -f "$7" ]; then
+            while IFS= read -r line || [ -n "$line" ]; do
+                case "$line" in P"$MOE_TAB"*|C"$MOE_TAB"*) printf '%s\n' "$line" ;; esac
+            done < "$7"
         fi
         :
     } > "$tmp" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 1; }
@@ -2798,13 +2810,56 @@ baseline_landed_flag() {
     return 0
 }
 
-# baseline_mark_landed TASKID -- flip the header's landed flag in place.
+# baseline_extra_rows SRC OWN STAGED OUT -- the P/C rows a baseline rewrite
+# keeps: SRC's P rows (they belong to the header's session, which a landing
+# never takes over) minus the paths STAGED landed, pruned exactly like B; and
+# C rows = OWN (resolve_attribution's `own` records) minus those paths -- or,
+# with no OWN file, SRC's C rows verbatim. Twin: Get-MoeCarryRows.
+baseline_extra_rows() {
+    $PYTHON_CMD - "$1" "${2:-}" "${3:-}" "$4" <<'PYEOF' 2>/dev/null || : > "$4"
+import os, sys
+src, own_f, staged_f, out_f = sys.argv[1:5]
+CI = sys.platform in ('win32', 'darwin')
+def key(p):
+    return p.lower() if CI else p
+def recs(path):
+    try:
+        with open(path, encoding='utf-8', errors='surrogateescape') as fh:
+            return [r.split('\t') for r in fh.read().split('\0') if r]
+    except Exception:
+        return []
+landed = set(key('\t'.join(r[2:])) for r in recs(staged_f) if len(r) >= 3)
+pre, carry = [], []
+try:
+    with open(src, encoding='utf-8', errors='surrogateescape') as fh:
+        for line in fh:
+            line = line.rstrip('\n').rstrip('\r')
+            parts = line.split('\t', 2)
+            if len(parts) < 3:
+                continue
+            if parts[0] == 'P' and key(parts[2]) not in landed:
+                pre.append(line)
+            elif parts[0] == 'C':
+                carry.append(line)
+except Exception:
+    pass
+if own_f and os.path.isfile(own_f):
+    carry = ['C\t' + r[0] + '\t' + '\t'.join(r[1:]) for r in recs(own_f)
+             if len(r) >= 2 and key('\t'.join(r[1:])) not in landed]
+with open(out_f, 'w', encoding='utf-8', errors='surrogateescape', newline='') as out:
+    out.write(''.join(line + '\n' for line in pre + carry))
+PYEOF
+    return 0
+}
+
+# baseline_mark_landed TASKID [OWN] -- flip the header's landed flag in place.
 # Caller: the post-flight's deliberate LANDING_MODE=none exit (checkpoint
 # commits off / a role with no landing), so the next pre-flight does not
 # replay a "recovered" checkpoint the operator turned off. A sibling's
 # deliberate exit must not mark another session's baseline landed, so the
 # flag goes through baseline_landed_flag (MOE_SID is this iteration's
-# pre-flight id) and the header's session is kept.
+# pre-flight id) and the header's session is kept. OWN (the session's own
+# bytes, left dirty on purpose) becomes the C rows its next session lands.
 baseline_mark_landed() {
     local f work b u head flag sess
     f="$(baseline_path "$1")"
@@ -2813,9 +2868,10 @@ baseline_mark_landed() {
     sess="$(baseline_session "$1")"
     work="$(create_secure_temp)"
     baseline_read "$1" "$work/bl-b-$$.tsv" "$work/bl-u-$$.tsv" || true
+    baseline_extra_rows "$f" "${2:-}" "" "$work/bl-x-$$.tsv"
     head=$(head -n1 "$f" 2>/dev/null | sed -n 's/.* head=\([^ ]*\).*/\1/p') || head=""
-    baseline_write "$1" "$head" "$work/bl-b-$$.tsv" "$work/bl-u-$$.tsv" "$flag" "$sess" || true
-    rm -f "$work/bl-b-$$.tsv" "$work/bl-u-$$.tsv" 2>/dev/null || true
+    baseline_write "$1" "$head" "$work/bl-b-$$.tsv" "$work/bl-u-$$.tsv" "$flag" "$sess" "$work/bl-x-$$.tsv" || true
+    rm -f "$work/bl-b-$$.tsv" "$work/bl-u-$$.tsv" "$work/bl-x-$$.tsv" 2>/dev/null || true
     return 0
 }
 
@@ -3159,12 +3215,12 @@ out = {'taskId': task_id, 'fallback': True}
 always = []
 if own is None:
     out['notFound'] = True
-    out.update(title='', status='', asserted=[], planned=[], touchedFiles=[], inferredPaths=[], unattributedPaths=[])
+    out.update(title='', status='', asserted=[], declared=[], planned=[], touchedFiles=[], inferredPaths=[], unattributedPaths=[])
 else:
     a, pl = tiers(own)
     out.update(title=own.get('title') or '', status=own.get('status') or '', epicId=own.get('epicId'),
                reopenCount=own.get('reopenCount') or 0, assignedWorkerId=own.get('assignedWorkerId'),
-               asserted=a, planned=pl,
+               asserted=a, declared=PS().addall(own.get('declaredFiles')).values(), planned=pl,
                touchedFiles=PS().addall(own.get('touchedFiles')).values(),
                inferredPaths=PS().addall(own.get('inferredPaths')).values(),
                unattributedPaths=PS().addall(own.get('unattributedPaths')).values())
@@ -3205,23 +3261,30 @@ PYEOF
 # The exact tiered algorithm (see docs/CONFIGURATION.md "attribution"), in ONE
 # python pass -- bash 3.2 has no associative arrays. Writes NUL-terminated
 # records into OUT_DIR: candidates (reason\tblob\tpath), skipped (code\tpath),
-# unattributed (blob\tpath), contested (peer\tpath), missing (path), plus a
-# KEY=VALUE summary. Tiers: BOARD (own task record always; project.json /
-# epics / non-live-peer records when changed) > DENY (.moe/**, .mcp.json,
-# .codex/**, .gemini/**, .grok/**, .claude/agents/**, .claude/settings.local.json,
-# untracked .serena/**, .worktrees/**, .moe-worktree*, attribution.exclude) >
-# ASSERTED ∪ TOOL ∪ own Serena memories (committed regardless of the baseline;
-# CONTESTED when a peer declared them too) > PEER-declared (skipped) >
-# PREEXISTING (dirty before the task and untouched: NEVER committed, the hard
-# constraint) > PLANNED (plan-declared, changed since baseline) > MEASURED
-# (undeclared, changed; policy 'always', or 'solo' with no active peer;
-# inferred=true, never promoted) > UNATTRIBUTED (reported, never staged).
+# unattributed (blob\tpath), contested (peer\tpath), missing (path), own
+# (blob\tpath: the dirty paths whose bytes this task can vouch for, which a
+# baseline rewrite carries to its next session as C rows), plus a KEY=VALUE
+# summary. MODE carry writes `own` only. Tiers: BOARD (own task record always;
+# project.json / epics / non-live-peer records when changed) > DENY (.moe/**,
+# .mcp.json, .codex/**, .gemini/**, .grok/**, .claude/agents/**,
+# .claude/settings.local.json, untracked .serena/**, .worktrees/**,
+# .moe-worktree*, attribution.exclude) > ASSERTED ∪ TOOL ∪ own Serena memories
+# (CONTESTED when a peer declared them too; committed regardless of the
+# baseline, except that a path asserted only by history -- not declare_files,
+# not TOOL -- whose bytes this task did not produce is MOE_ATTR_ASSERTED_FOREIGN)
+# > PEER-declared (skipped) > PREEXISTING (dirty before the task and
+# untouched: NEVER committed, the hard constraint) > PLANNED (plan-declared,
+# changed since baseline) > MEASURED (undeclared, changed; policy 'always', or
+# 'solo' with no active peer; inferred=true, never promoted) > UNATTRIBUTED
+# (reported, never staged). LAND_EVIDENCE_FILE names the pre-flight evidence
+# (P rows, see baseline_path) of the session whose bytes land; '' = none.
+LAND_EVIDENCE_FILE=""
 resolve_attribution() {
     local mode="$1" tid="$2" snap="$3" bfile="$4" ufile="$5" toolfile="$6" scopefile="$7" outdir="$8" override="${9:-}"
     mkdir -p "$outdir" 2>/dev/null || return 1
     MOE_LAND_UNDECLARED="$CS_ATTR_UNDECLARED" MOE_LAND_CONTESTED="$CS_ATTR_CONTESTED" MOE_LAND_EXCLUDE="$CS_ATTR_EXCLUDE" \
     MOE_LAND_BOARD_STATE="$CS_COMMIT_BOARD_STATE" MOE_LAND_POLICY_OVERRIDE="$override" \
-    MOE_LAND_BASE="${10:-}" MOE_LAND_INDEX="${11:-}" \
+    MOE_LAND_BASE="${10:-}" MOE_LAND_INDEX="${11:-}" MOE_LAND_EVIDENCE="${LAND_EVIDENCE_FILE:-}" \
     MOE_GIT_TOP="$MOE_TOP" MOE_GIT_REL="$MOE_REL" \
     $PYTHON_CMD - "$mode" "$tid" "$snap" "$bfile" "$ufile" "$toolfile" "$scopefile" "$outdir" 2>"$outdir/attr.err" <<'PYEOF'
 import json, os, re, subprocess, sys
@@ -3311,6 +3374,10 @@ def decl_set(lst):
                 out.setdefault(key(n), n)
     return out
 ASSERTED = decl_set(scope.get('asserted'))
+# moe.declare_files: the part of ASSERTED committed regardless of the
+# baseline. None = a daemon older than the field, which keeps that behaviour
+# for every ASSERTED path (ps1 twin: Scope.Declared).
+DECLARED = decl_set(scope.get('declared')) if isinstance(scope.get('declared'), list) else None
 PLANNED = dict((k, v) for k, v in decl_set(scope.get('planned')).items() if k not in ASSERTED)
 PEER = {}
 for ent in (scope.get('peerDeclared') or []):
@@ -3375,8 +3442,36 @@ def changed(pk, blob):
     if pk not in B:
         return True
     return blob == '?' or B[pk] != blob
+# Evidence for the historically-asserted rule: the P rows of the session whose
+# bytes land -- the paths dirty at its pre-flight that were not carried as
+# this task's own (C rows) -- with their blobs then. Unlike B, whose blobs
+# can be days older than the session, these are that session's own snapshot.
+# No evidence (a pre-flight that could not snapshot) fails closed: only TOOL.
+PRE = None
+ev_f = env.get('MOE_LAND_EVIDENCE') or ''
+if ev_f and os.path.isfile(ev_f):
+    PRE = {}
+    for parts in read_rows(ev_f):
+        if len(parts) >= 3 and parts[0] == 'P':
+            p = norm_top('\t'.join(parts[2:]))
+            if p:
+                PRE[key(p)] = parts[1]
+def own_bytes(pk, blob):
+    # This task produced the bytes: its session's editing tools wrote them, or
+    # they differ from what was already dirty when the session started.
+    if pk in TOOL or blob == '?':
+        return True
+    return PRE is not None and PRE.get(pk) != blob
+own = []
+for pk in sorted(S):
+    if not denied(S[pk][0], S[pk][2]) and own_bytes(pk, S[pk][1]):
+        own.append(S[pk][1] + '\t' + S[pk][0])
+with open(os.path.join(out_dir, 'own'), 'w', encoding='utf-8', errors='surrogateescape', newline='') as fh:
+    fh.write(''.join(rec + '\0' for rec in own))
+if mode == 'carry':
+    sys.exit(0)
 cands, skipped, unattributed, contested, missing = [], [], [], [], []
-n_pre = n_exc = n_inf = 0
+n_pre = n_exc = n_inf = n_foreign = 0
 for pk in sorted(S):
     p, blob, xy = S[pk]
     if pk in board_always:
@@ -3405,6 +3500,17 @@ for pk in sorted(S):
             if contested_policy == 'skip-untouched' and pk not in TOOL:
                 skipped.append(('MOE_ATTR_CONTESTED_UNTOUCHED(%s)' % PEER[pk], p))
                 continue
+        # Asserted only by history (filesModified, completed steps, prior
+        # commits, touchedFiles -- never declare_files): a claim on the PATH,
+        # not on whatever bytes sit in it now. Bytes that were already dirty
+        # when the session started and are untouched since are someone
+        # else's (2026-09-30: a foreign edit to a delivered file landed under
+        # the task whose filesModified named it) -- skipped, never staged.
+        if DECLARED is not None and pk in ASSERTED and pk not in DECLARED \
+                and not own_memory(p, xy) and not own_bytes(pk, blob):
+            skipped.append(('MOE_ATTR_ASSERTED_FOREIGN', p))
+            n_foreign += 1
+            continue
         cands.append(('ASSERTED', blob, p))
         continue
     if pk in PEER:
@@ -3777,8 +3883,8 @@ write_recs('contested', contested)
 write_recs('missing', [(m,) for m in missing])
 declared = set(ASSERTED) | set(PLANNED)
 with open(os.path.join(out_dir, 'summary'), 'w', newline='') as fh:
-    fh.write('N_CANDIDATES=%d\nN_NON_BOARD=%d\nN_INFERRED=%d\nN_SKIPPED=%d\nN_UNATTRIBUTED=%d\nN_MISSING=%d\nN_PREEXISTING=%d\nN_EXCLUDED=%d\nN_DECLARED=%d\nN_ASSERTED=%d\nALL_ASSERTED_MISSING=%d\nN_TOOL=%d\nN_CONTESTED=%d\nPEERS_ACTIVE=%d\n' % (
-        len(cands), sum(1 for c in cands if c[0] != 'BOARD'), n_inf, len(skipped), len(unattributed), len(missing), n_pre, n_exc, len(declared), len(ASSERTED), all_missing, len(TOOL), len(contested), 1 if peers_active else 0))
+    fh.write('N_CANDIDATES=%d\nN_NON_BOARD=%d\nN_INFERRED=%d\nN_SKIPPED=%d\nN_UNATTRIBUTED=%d\nN_MISSING=%d\nN_PREEXISTING=%d\nN_EXCLUDED=%d\nN_DECLARED=%d\nN_ASSERTED=%d\nALL_ASSERTED_MISSING=%d\nN_TOOL=%d\nN_CONTESTED=%d\nPEERS_ACTIVE=%d\nN_ASSERTED_FOREIGN=%d\n' % (
+        len(cands), sum(1 for c in cands if c[0] != 'BOARD'), n_inf, len(skipped), len(unattributed), len(missing), n_pre, n_exc, len(declared), len(ASSERTED), all_missing, len(TOOL), len(contested), 1 if peers_active else 0, n_foreign))
 PYEOF
 }
 
@@ -3786,7 +3892,7 @@ PYEOF
 attr_summary_load() {
     ATTR_N_CANDIDATES=0; ATTR_N_INFERRED=0; ATTR_N_SKIPPED=0; ATTR_N_UNATTRIBUTED=0; ATTR_N_MISSING=0
     ATTR_N_PREEXISTING=0; ATTR_N_EXCLUDED=0; ATTR_N_DECLARED=0; ATTR_N_ASSERTED=0; ATTR_ALL_ASSERTED_MISSING=0
-    ATTR_N_TOOL=0; ATTR_N_CONTESTED=0; ATTR_PEERS_ACTIVE=0
+    ATTR_N_TOOL=0; ATTR_N_CONTESTED=0; ATTR_PEERS_ACTIVE=0; ATTR_N_ASSERTED_FOREIGN=0
     ATTR_N_NON_BOARD=unknown
     [ -f "$1/summary" ] || return 1
     local k v
@@ -3807,6 +3913,7 @@ attr_summary_load() {
             N_TOOL) ATTR_N_TOOL="$v" ;;
             N_CONTESTED) ATTR_N_CONTESTED="$v" ;;
             PEERS_ACTIVE) ATTR_PEERS_ACTIVE="$v" ;;
+            N_ASSERTED_FOREIGN) ATTR_N_ASSERTED_FOREIGN="$v" ;;
         esac
     done < "$1/summary"
     return 0
@@ -4685,14 +4792,17 @@ PYEOF
     return 0
 }
 
-# baseline_after_landing TASKID B_FILE U_SRC STAGED_FILE LANDED SESSION -- remove
+# baseline_after_landing TASKID B_FILE U_SRC STAGED_FILE LANDED SESSION [SRC OWN] -- remove
 # the landed paths from B, replace U with this pass's unattributed set, keep the
 # file (it lives until the task is DONE/ARCHIVED), refresh head. LANDED and
 # SESSION come from run_landing (baseline_landed_flag / the header's session):
-# a landing never takes over another session's baseline.
+# a landing never takes over another session's baseline. SRC (the baseline as
+# the landing read it) keeps its P rows; OWN minus the landed paths becomes
+# the C rows (baseline_extra_rows).
 baseline_after_landing() {
     local tid="$1" bfile="$2" unattr="$3" staged="$4" landed="$5" session="${6:-}" work head
     work="$(create_secure_temp)"
+    baseline_extra_rows "${7:-}" "${8:-}" "$staged" "$work/bl-next-x-$$.tsv"
     $PYTHON_CMD - "$bfile" "$staged" "$unattr" "$work/bl-next-b-$$.tsv" "$work/bl-next-u-$$.tsv" <<'PYEOF' 2>/dev/null || return 0
 import sys
 b_f, staged_f, unattr_f, out_b, out_u = sys.argv[1:6]
@@ -4732,8 +4842,8 @@ with open(out_u, 'w', encoding='utf-8', errors='surrogateescape', newline='') as
         pass
 PYEOF
     head=$(git -C "$MOE_TOP" rev-parse -q --verify HEAD 2>/dev/null) || head=""
-    baseline_write "$tid" "$head" "$work/bl-next-b-$$.tsv" "$work/bl-next-u-$$.tsv" "$landed" "$session" || true
-    rm -f "$work/bl-next-b-$$.tsv" "$work/bl-next-u-$$.tsv" 2>/dev/null || true
+    baseline_write "$tid" "$head" "$work/bl-next-b-$$.tsv" "$work/bl-next-u-$$.tsv" "$landed" "$session" "$work/bl-next-x-$$.tsv" || true
+    rm -f "$work/bl-next-b-$$.tsv" "$work/bl-next-u-$$.tsv" "$work/bl-next-x-$$.tsv" 2>/dev/null || true
     return 0
 }
 
@@ -4974,6 +5084,16 @@ run_landing() {
     local bl_flag bl_session
     bl_flag="$(baseline_landed_flag "$LAND_TASK_ID" "${LAND_RECOVERED:-false}")"
     bl_session="$(baseline_session "$LAND_TASK_ID")"
+    cp -f "$(baseline_path "$LAND_TASK_ID")" "$work/BL.tsv" 2>/dev/null || : > "$work/BL.tsv"
+    # MOE_ATTR_ASSERTED_FOREIGN evidence: a recovery lands the crashed session's
+    # bytes against the P rows ITS pre-flight persisted; every other landing
+    # uses the evidence this session's own pre-flight kept in memory, never the
+    # file, which a peer's pre-flight may have rewritten meanwhile.
+    if [ "${LAND_RECOVERED:-false}" = true ]; then
+        LAND_EVIDENCE_FILE="$work/BL.tsv"
+    else
+        LAND_EVIDENCE_FILE="${MOE_PREFLIGHT_EVIDENCE:-}"
+    fi
     if ! baseline_read "$LAND_TASK_ID" "$work/B.tsv" "$work/U.tsv"; then
         bl_session="${MOE_SID:-}"
         # Fail CLOSED on missing evidence: with no readable baseline every
@@ -5019,6 +5139,9 @@ run_landing() {
     fi
     if [ "${ATTR_N_EXCLUDED:-0}" -gt 0 ]; then
         echo -e "${BLUE}[attribution]${NC} $ATTR_N_EXCLUDED excluded path(s) untouched (MOE_ATTR_EXCLUDED: .moe/, tool config, worktrees)"
+    fi
+    if [ "${ATTR_N_ASSERTED_FOREIGN:-0}" -gt 0 ]; then
+        echo -e "${YELLOW}[attribution]${NC} $ATTR_N_ASSERTED_FOREIGN path(s) this task asserted earlier were already dirty when the session started and are untouched since -- held as MOE_ATTR_ASSERTED_FOREIGN; moe.declare_files them only if those bytes are this task's."
     fi
 
     if [ "${LAND_GATE_FAILED:-false}" = "true" ]; then
@@ -5160,7 +5283,7 @@ run_landing() {
         local owed=1
         if record_commit_rpc "committed" "$LAND_KIND" "$LAND_SHA" "$LAND_BRANCH" "" "" "$LAND_PUSHED" "$LAND_STAGED_FILE" "$LAND_DROPPED_FILE"; then owed=""; fi
         LAND_RECORDED=true
-        baseline_after_landing "$LAND_TASK_ID" "$work/B.tsv" "$ATTR_DIR/unattributed" "$LAND_STAGED_FILE" "$bl_flag" "$bl_session"
+        baseline_after_landing "$LAND_TASK_ID" "$work/B.tsv" "$ATTR_DIR/unattributed" "$LAND_STAGED_FILE" "$bl_flag" "$bl_session" "$work/BL.tsv" "$ATTR_DIR/own"
         if [ -n "${RECEIPT_LANDED:-}" ]; then
             local report
             # Only an acknowledged row leaves the journal; a lost one is replayed.
@@ -5170,10 +5293,10 @@ run_landing() {
         fi
     elif [ "$LAND_OUTCOME" = "nothing" ]; then
         record_commit_rpc "nothing" "$LAND_KIND" "" "$LAND_BRANCH" "$LAND_CODE" "" "" "" "" || true
-        baseline_after_landing "$LAND_TASK_ID" "$work/B.tsv" "$ATTR_DIR/unattributed" "$work/none.z" "$bl_flag" "$bl_session"
+        baseline_after_landing "$LAND_TASK_ID" "$work/B.tsv" "$ATTR_DIR/unattributed" "$work/none.z" "$bl_flag" "$bl_session" "$work/BL.tsv" "$ATTR_DIR/own"
     elif [ "$LAND_OUTCOME" = "refused" ]; then
         record_commit_rpc "refused" "$LAND_KIND" "" "$LAND_BRANCH" "$LAND_CODE" "" "" "" "" || true
-        baseline_after_landing "$LAND_TASK_ID" "$work/B.tsv" "$ATTR_DIR/unattributed" "$work/none.z" "$bl_flag" "$bl_session"
+        baseline_after_landing "$LAND_TASK_ID" "$work/B.tsv" "$ATTR_DIR/unattributed" "$work/none.z" "$bl_flag" "$bl_session" "$work/BL.tsv" "$ATTR_DIR/own"
     else
         record_commit_rpc "failed" "$LAND_KIND" "" "$LAND_BRANCH" "${LAND_CODE:-MOE_COMMIT_FAILED}" "${LAND_MESSAGE:-}" "" "" "$LAND_DROPPED_FILE" || true
     fi
@@ -5321,15 +5444,24 @@ PYEOF
 
     # 4. Baseline merge: inter-session dirt is presumed foreign unless the task
     # is already known to own it (asserted/touched/unattributed/inferred/U).
-    local spre="$work/S-pre.tsv" k_foreign="0" head=""
+    # The same pass writes this session's P rows (MOE_ATTR_ASSERTED_FOREIGN
+    # evidence, see baseline_path): the dirty snapshot minus the C rows, whose
+    # bytes a previous session of this task left as its own. A recovery that
+    # ran above and did not complete hands the crashed session's bytes to THIS
+    # session's landing, as the kept B rows do, so its P rows stay the
+    # evidence instead (a fresh snapshot would read those bytes as foreign).
+    local spre="$work/S-pre.tsv" k_foreign="0" head="" inherit_pre=0
     if ! git_dirty_snapshot "$spre"; then
         echo -e "${YELLOW}[WARN]${NC} git status failed at pre-flight; no baseline written for $tid -- measured attribution is off for this session."
         return 0
     fi
+    if [ -f "$bp" ] && ! baseline_landed "$tid" && [ "$live_state" != "live" ] && [ "$live_state" != "foreign" ]; then
+        inherit_pre=1
+    fi
     baseline_read "$tid" "$work/B-old.tsv" "$work/U.tsv" || true
-    k_foreign=$($PYTHON_CMD - "$spre" "$work/B-old.tsv" "$known_mine" "$work/U.tsv" "$work/B-new.tsv" <<'PYEOF' 2>/dev/null || echo 0
+    k_foreign=$($PYTHON_CMD - "$spre" "$work/B-old.tsv" "$known_mine" "$work/U.tsv" "$work/B-new.tsv" "$bp" "$inherit_pre" "$work/P-new.tsv" <<'PYEOF' 2>/dev/null || echo 0
 import sys
-spre_f, bold_f, mine_f, u_f, out_f = sys.argv[1:6]
+spre_f, bold_f, mine_f, u_f, out_f, bl_f, inherit, pre_f = sys.argv[1:9]
 CI = sys.platform in ('win32', 'darwin')
 def key(p):
     return p.lower() if CI else p
@@ -5364,6 +5496,17 @@ except Exception:
     pass
 for parts in rows(u_f, 2):
     mine.add(key('\t'.join(parts[1:])))
+carry, pre_old = {}, []
+for parts in rows(bl_f, 3):
+    if parts[0] == 'C':
+        carry[key('\t'.join(parts[2:]))] = parts[1]
+    elif parts[0] == 'P':
+        pre_old.append('\t'.join(parts))
+with open(pre_f, 'w', encoding='utf-8', errors='surrogateescape', newline='') as out:
+    if inherit == '1':
+        out.write(''.join(line + '\n' for line in pre_old))
+    else:
+        out.write(''.join('P\t' + S[k][1] + '\t' + S[k][0] + '\n' for k in sorted(S) if carry.get(k) != S[k][1]))
 had_baseline = bool(B)
 new = {}
 if not had_baseline:
@@ -5383,10 +5526,16 @@ sys.stdout.write(str(foreign))
 PYEOF
     )
     head=$(git -C "$MOE_TOP" rev-parse -q --verify HEAD 2>/dev/null) || head=""
+    # This session's landings judge against this copy, never the file a
+    # peer's pre-flight may rewrite meanwhile (run_landing, teardown_rescue).
+    if [ -f "$work/P-new.tsv" ]; then
+        MOE_PREFLIGHT_EVIDENCE="$(create_secure_temp)/preflight-evidence-$$.tsv"
+        cp -f "$work/P-new.tsv" "$MOE_PREFLIGHT_EVIDENCE" 2>/dev/null || MOE_PREFLIGHT_EVIDENCE=""
+    fi
     # A dead merge (B-new.tsv absent) must NOT write a header-only baseline:
     # an empty B reads as "everything changed since baseline" and re-arms the
     # MEASURED sweep the landing's fail-closed guard exists to prevent.
-    if [ -f "$work/B-new.tsv" ] && baseline_write "$tid" "$head" "$work/B-new.tsv" "$work/U.tsv" 0 "$MOE_SID"; then
+    if [ -f "$work/B-new.tsv" ] && baseline_write "$tid" "$head" "$work/B-new.tsv" "$work/U.tsv" 0 "$MOE_SID" "$work/P-new.tsv"; then
         MOE_BASELINE_PATH="$bp"
         echo -e "${BLUE}[attribution]${NC} baseline written for $tid (${k_foreign:-0} dirty path(s) belong to other sessions or are pre-existing)"
         # Claim the bytes this baseline arms: a session gets both or neither.
@@ -5488,6 +5637,7 @@ teardown_rescue() {
     local tool="${MOE_TOOL_WRITES_FILE:-}"
     if [ -z "$tool" ] || [ ! -f "$tool" ]; then tool="$work/tool.txt"; : > "$tool"; fi
     LAND_TOOL_FILE_EFFECTIVE="$tool"
+    LAND_EVIDENCE_FILE="${MOE_PREFLIGHT_EVIDENCE:-}"
     resolve_attribution "rescue" "$tid" "$work/S.tsv" "$work/B.tsv" "$work/U.tsv" "$tool" "$work/scope.json" "$ATTR_DIR" "never" || return 0
     LAND_OUTCOME=failed
     rescue_ref "teardown" "$ATTR_DIR/candidates" || true
@@ -5640,6 +5790,7 @@ while [ "$LOOP_RUNNING" = true ]; do
     MOE_REL=""
     MOE_GITDIR=""
     MOE_BASELINE_PATH=""
+    MOE_PREFLIGHT_EVIDENCE=""
     MOE_LANDING_DONE=""
     MOE_PREFLIGHT_NOTICE=""
     MOE_TOOL_WRITES_FILE="$(create_secure_temp)/tool-writes-$$.txt"
@@ -7669,8 +7820,23 @@ except Exception:
             # baseline landed so the next pre-flight does not land this
             # session's edits as a wip(...) recovered commit the operator
             # turned off. Same as the ps1 twin's Set-MoeBaselineLanded.
+            # The bytes it leaves dirty on purpose are still this task's: they
+            # travel as C rows so its next session does not read them as
+            # foreign (MOE_ATTR_ASSERTED_FOREIGN).
             if [ -n "$MOE_TOP" ] || git_top; then
-                baseline_mark_landed "$PREFLIGHT_TASK_ID"
+                MARK_OWN=""
+                MARK_SNAP="${POSTFLIGHT_SNAPSHOT:-}"
+                if [ -z "$MARK_SNAP" ] || [ ! -f "$MARK_SNAP" ]; then
+                    MARK_SNAP="$(create_secure_temp)/S-mark-$$.tsv"
+                    git_dirty_snapshot "$MARK_SNAP" || MARK_SNAP=""
+                fi
+                if [ -n "$MARK_SNAP" ]; then
+                    LAND_EVIDENCE_FILE="${MOE_PREFLIGHT_EVIDENCE:-}"
+                    if resolve_attribution carry "$PREFLIGHT_TASK_ID" "$MARK_SNAP" "" "" "${MOE_TOOL_WRITES_FILE:-}" "" "$(create_secure_temp)/carry-$$" ""; then
+                        MARK_OWN="$(create_secure_temp)/carry-$$/own"
+                    fi
+                fi
+                baseline_mark_landed "$PREFLIGHT_TASK_ID" "$MARK_OWN"
             fi
         fi
         if [ "$LANDING_MODE" != "none" ]; then

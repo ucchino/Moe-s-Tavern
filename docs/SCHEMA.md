@@ -472,7 +472,7 @@ interface Task {
   // schemaVersion bump. Never cleared by reopen/qa_reject.
   commits?: TaskCommit[];        // Every landed commit (completion/checkpoint/rescue); idempotent by sha and kind,
                                  // capped at MAX_COMMITS_PER_TASK (50, newest kept)
-  declaredFiles?: string[];      // moe.declare_files assertions (ASSERTED attribution tier)
+  declaredFiles?: string[];      // moe.declare_files assertions (ASSERTED attribution tier; get_commit_scope `declared`: committed regardless of the baseline)
   touchedFiles?: string[];       // Tool-write harvest (stream-json Edit/Write paths), unioned across sessions (ASSERTED tier)
   inferredPaths?: string[];      // MEASURED-tier paths the wrapper landed — PLANNED tier next session, never promoted
   unattributedPaths?: string[];  // Changed paths the last landing could not attribute (replaced each landing; never staged)
@@ -542,7 +542,7 @@ interface ImplementationStep {
   completedAt?: string;          // When step finished
   note?: string;                 // Optional note from complete_step
   modifiedFiles?: string[];      // EVERY file this step created/modified (complete_step; omitted → warning).
-                                 // ASSERTED attribution tier: the wrapper commits it regardless of its baseline
+                                 // ASSERTED attribution tier: the wrapper commits it when this task produced its dirty bytes (else MOE_ATTR_ASSERTED_FOREIGN)
   amendments?: StepAmendment[];  // Append-only revisions from moe.amend_plan_step (oldest first, max 10)
   activeAmendmentId?: string;    // Which amendment is in force; absent = follow `description`
 }

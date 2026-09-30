@@ -525,6 +525,13 @@ switch (tool) {
     //                                             (every other open task is
     //                                             then held by a live peer)
     //   FAKE_SCOPE_ASSIGNED                       assignedWorkerId
+    //   FAKE_SCOPE_DECLARED_FIELD=1               serve `declared` (the
+    //                                             record's declaredFiles) as
+    //                                             the current daemon does;
+    //                                             unset models a daemon from
+    //                                             before the field, whose
+    //                                             asserted paths all land
+    //                                             regardless of the baseline
     // Pre-flight answers with the record's own status (the FAKE_TASK_STATUS
     // knob models the status the task reaches AFTER the CLI ran).
     const tid = args.taskId || 'task-postflight';
@@ -572,6 +579,7 @@ switch (tool) {
       assignedWorkerId: process.env.FAKE_SCOPE_ASSIGNED || args.workerId || null,
       assigneeAlive: true,
       asserted, planned,
+      ...(process.env.FAKE_SCOPE_DECLARED_FIELD === '1' ? { declared: list(own?.declaredFiles) } : {}),
       touchedFiles: list(own?.touchedFiles), inferredPaths: list(own?.inferredPaths), unattributedPaths: list(own?.unattributedPaths),
       peerDeclared,
       livePeerIds: peersActive ? ['worker-peer'] : [],
@@ -2531,6 +2539,86 @@ EOF
   SCOPE_SCENARIOS_RUN=$((SCOPE_SCENARIOS_RUN + 1))
   echo "[scenario L] ok"
 
+  # Scenario L2 -- a path asserted only by HISTORY (filesModified, completed
+  # steps, prior commits, touchedFiles; never moe.declare_files) is a claim on
+  # the path, not on whatever bytes sit in it. On 2026-09-30 someone left an
+  # uncommitted edit to a security guard in the shared root; the file was in
+  # a task's filesModified from its delivery days earlier, and that task's
+  # next session -- which worked in an isolated clone and never touched the
+  # file -- committed the foreign edit under its own id. With the daemon's
+  # `declared` field the wrapper lands history's bytes only when THIS task
+  # produced them. Two sessions of one task, checkpoints off, so the first
+  # leaves its own edit dirty on purpose (no TOOL witness in either, as for a
+  # codex seat):
+  #   foreign.txt   filesModified, dirty before both sessions, never touched:
+  #                 MOE_ATTR_ASSERTED_FOREIGN, left dirty (the incident)
+  #   declared.txt  declare_files, dirty before both sessions, never touched:
+  #                 lands (the explicit contract: regardless of the baseline)
+  #   carried.txt   filesModified, edited by session 1, which exits without a
+  #                 landing: a C row, landed by session 2
+  #   own.txt       filesModified, edited by session 2: lands
+  echo "[scenario L2] history-only asserted bytes this task did not produce stay out; declared, carried and own bytes land"
+  SCOPE_L2_DIR="$TMP_DIR/scope-l2"
+  make_scope_project "$SCOPE_L2_DIR" '["foreign.txt","declared.txt","carried.txt","own.txt"]' WORKING '[]' '{"checkpointCommits":false}'
+  "$NODE_FOR_TEST" -e 'const f=process.argv[1],fs=require("fs");const t=JSON.parse(fs.readFileSync(f,"utf8"));t.declaredFiles=["declared.txt"];fs.writeFileSync(f,JSON.stringify(t)+"\n");' \
+    "$SCOPE_L2_DIR/.moe/tasks/task-postflight.json"
+  for l2_p in foreign.txt declared.txt carried.txt own.txt; do echo base > "$SCOPE_L2_DIR/$l2_p"; done
+  git -C "$SCOPE_L2_DIR" add foreign.txt declared.txt carried.txt own.txt .moe/tasks/task-postflight.json >/dev/null
+  git -C "$SCOPE_L2_DIR" commit -qm l2-base >/dev/null
+  l2_base="$(git -C "$SCOPE_L2_DIR" rev-parse HEAD)"
+  echo foreign-edit > "$SCOPE_L2_DIR/foreign.txt"
+  echo stranded-work > "$SCOPE_L2_DIR/declared.txt"
+  L2_CLI="$TMP_DIR/l2-cli"
+  cat > "$L2_CLI" <<'EOF'
+#!/usr/bin/env bash
+echo "session edit" >> "$MOE_PROJECT_PATH/$FAKE_L2_EDIT"
+exit 0
+EOF
+  chmod +x "$L2_CLI"
+  l2_tab=$'\t'
+  set +e
+  FAKE_SCOPE_DECLARED_FIELD=1 FAKE_TASK_STATUS=WORKING FAKE_L2_EDIT=carried.txt \
+    run_scope_wrapper "$SCOPE_L2_DIR" "$TMP_DIR/scope-l2-1.out" "$L2_CLI"
+  scope_l2_code=$?
+  set -e
+  [ "$scope_l2_code" -eq 0 ] || scope_fail L2 "session 1 exited with $scope_l2_code" "$TMP_DIR/scope-l2-1.out"
+  [ "$(git -C "$SCOPE_L2_DIR" rev-parse HEAD)" = "$l2_base" ] \
+    || scope_fail L2 "checkpoints are off: session 1 must not commit" "$TMP_DIR/scope-l2-1.out"
+  SCOPE_L2_BASELINE="$SCOPE_L2_DIR/.git/moe/baseline/task-postflight.tsv"
+  if ! grep -q "^C${l2_tab}$(git -C "$SCOPE_L2_DIR" hash-object carried.txt)${l2_tab}carried\\.txt\$" "$SCOPE_L2_BASELINE"; then
+    cat "$SCOPE_L2_BASELINE" >&2 || true
+    scope_fail L2 "session 1's own unlanded edit must travel as a C row" "$TMP_DIR/scope-l2-1.out"
+  fi
+  if grep -Eq "^C${l2_tab}[^${l2_tab}]*${l2_tab}(foreign|declared)\\.txt\$" "$SCOPE_L2_BASELINE"; then
+    cat "$SCOPE_L2_BASELINE" >&2 || true
+    scope_fail L2 "bytes session 1 did not produce must never be carried" "$TMP_DIR/scope-l2-1.out"
+  fi
+  set +e
+  FAKE_SCOPE_DECLARED_FIELD=1 FAKE_TASK_STATUS=REVIEW FAKE_L2_EDIT=own.txt \
+    run_scope_wrapper "$SCOPE_L2_DIR" "$TMP_DIR/scope-l2-2.out" "$L2_CLI"
+  scope_l2_code=$?
+  set -e
+  [ "$scope_l2_code" -eq 0 ] || scope_fail L2 "session 2 exited with $scope_l2_code" "$TMP_DIR/scope-l2-2.out"
+  scope_l2_files="$(committed_paths "$SCOPE_L2_DIR")"
+  if [ "$scope_l2_files" != "carried.txt declared.txt own.txt " ]; then
+    scope_fail L2 "expected exactly the declared, carried and own paths; got [$scope_l2_files]" "$TMP_DIR/scope-l2-2.out"
+  fi
+  if ! grep -Fq '[skip] foreign.txt MOE_ATTR_ASSERTED_FOREIGN' "$TMP_DIR/scope-l2-2.out"; then
+    scope_fail L2 "expected '[skip] foreign.txt MOE_ATTR_ASSERTED_FOREIGN'" "$TMP_DIR/scope-l2-2.out"
+  fi
+  if ! git -C "$SCOPE_L2_DIR" status --porcelain | grep -q '^ M foreign\.txt$' || [ "$(cat "$SCOPE_L2_DIR/foreign.txt")" != foreign-edit ]; then
+    scope_fail L2 "foreign.txt must stay modified-and-unstaged with its bytes untouched" "$TMP_DIR/scope-l2-2.out"
+  fi
+  if [ -n "$(git -C "$SCOPE_L2_DIR" log --format=%H "$l2_base..HEAD" -- foreign.txt)" ]; then
+    scope_fail L2 "foreign.txt reached a commit" "$TMP_DIR/scope-l2-2.out"
+  fi
+  if ! grep -Fq '{"path":"foreign.txt","code":"MOE_ATTR_ASSERTED_FOREIGN"}' "$SCOPE_L2_DIR/.moe/record_commit.jsonl"; then
+    cat "$SCOPE_L2_DIR/.moe/record_commit.jsonl" >&2 || true
+    scope_fail L2 "the skip must reach the ledger" "$TMP_DIR/scope-l2-2.out"
+  fi
+  SCOPE_SCENARIOS_RUN=$((SCOPE_SCENARIOS_RUN + 1))
+  echo "[scenario L2] ok"
+
   # Scenario M -- recovery: a lingering baseline (previous session died without
   # landing) is landed as a `... recovered` checkpoint BEFORE the CLI launches,
   # on the resume path AND on the BLOCKED-hold idle path (no CLI at all).
@@ -2982,6 +3070,55 @@ EOF
   fi
   SCOPE_SCENARIOS_RUN=$((SCOPE_SCENARIOS_RUN + 1))
   echo "[scenario M3] ok"
+
+  # Scenario M4 -- crash rescue under scenario L2's history rule. A session
+  # died without landing; its baseline's P rows are ITS pre-flight snapshot.
+  # own-r.txt was clean then, so its dirty bytes are that session's own edit
+  # and the next pre-flight's recovery must still land them. foreign-r.txt
+  # was already dirty with the bytes it still has: someone else's, never
+  # landed, whatever the task's filesModified says.
+  echo "[scenario M4] a recovery lands the dead session's own bytes, never history-only bytes that predate it"
+  SCOPE_M4_DIR="$TMP_DIR/scope-m4"
+  make_scope_project "$SCOPE_M4_DIR" '["ignored.txt"]'
+  write_task_record "$SCOPE_M4_DIR" '["own-r.txt","foreign-r.txt"]' WORKING '[]' task-resume
+  echo base > "$SCOPE_M4_DIR/own-r.txt"
+  echo base > "$SCOPE_M4_DIR/foreign-r.txt"
+  git -C "$SCOPE_M4_DIR" add own-r.txt foreign-r.txt .moe/tasks/task-resume.json >/dev/null
+  git -C "$SCOPE_M4_DIR" commit -qm m4-base >/dev/null
+  m4_base="$(git -C "$SCOPE_M4_DIR" rev-parse HEAD)"
+  echo foreign-edit > "$SCOPE_M4_DIR/foreign-r.txt"
+  mkdir -p "$SCOPE_M4_DIR/.git/moe/baseline"
+  {
+    printf '#moe-baseline v1 task=task-resume at=2026-09-29T20:17:00Z head=%s landed=0 session=worker-dead@2026-09-29T20:17:00Z\n' "$m4_base"
+    for m4_kind in B P; do
+      for m4_p in .moe/project.json .moe/messages/chan-general.jsonl foreign-r.txt; do
+        printf '%s\t%s\t%s\n' "$m4_kind" "$(git -C "$SCOPE_M4_DIR" hash-object -- "$m4_p")" "$m4_p"
+      done
+    done
+  } > "$SCOPE_M4_DIR/.git/moe/baseline/task-resume.tsv"
+  echo own-edit > "$SCOPE_M4_DIR/own-r.txt"
+  set +e
+  FAKE_CLAIM_MODE=resume FAKE_SCOPE_DECLARED_FIELD=1 run_scope_wrapper "$SCOPE_M4_DIR" "$TMP_DIR/scope-m4.out" /bin/true worker worker-scope-m4
+  scope_m4_code=$?
+  set -e
+  [ "$scope_m4_code" -eq 0 ] || scope_fail M4 "wrapper exited with $scope_m4_code" "$TMP_DIR/scope-m4.out"
+  if ! grep -Fq 'MOE_CHECKPOINT_RECOVERED task=task-resume' "$TMP_DIR/scope-m4.out"; then
+    scope_fail M4 "expected MOE_CHECKPOINT_RECOVERED for task-resume" "$TMP_DIR/scope-m4.out"
+  fi
+  scope_m4_sha="$(git -C "$SCOPE_M4_DIR" log --format='%H %s' --fixed-strings --grep='Moe-Task: task-resume' | grep ' recovered$' | head -n1 | cut -d' ' -f1)"
+  scope_m4_files="$(git -C "$SCOPE_M4_DIR" show --pretty=format: --name-only "$scope_m4_sha" 2>/dev/null | sed '/^$/d' | sort | tr '\n' ' ')"
+  if [ "$scope_m4_files" != "own-r.txt " ]; then
+    scope_fail M4 "the recovered checkpoint must carry exactly the dead session's own edit; got [$scope_m4_files]" "$TMP_DIR/scope-m4.out"
+  fi
+  if ! grep -Fq '[skip] foreign-r.txt MOE_ATTR_ASSERTED_FOREIGN' "$TMP_DIR/scope-m4.out"; then
+    scope_fail M4 "expected '[skip] foreign-r.txt MOE_ATTR_ASSERTED_FOREIGN'" "$TMP_DIR/scope-m4.out"
+  fi
+  if [ -n "$(git -C "$SCOPE_M4_DIR" log --format=%H "$m4_base..HEAD" -- foreign-r.txt)" ] \
+    || ! git -C "$SCOPE_M4_DIR" status --porcelain | grep -q '^ M foreign-r\.txt$'; then
+    scope_fail M4 "foreign-r.txt must never be committed and must stay modified-and-unstaged" "$TMP_DIR/scope-m4.out"
+  fi
+  SCOPE_SCENARIOS_RUN=$((SCOPE_SCENARIOS_RUN + 1))
+  echo "[scenario M4] ok"
 
   # Scenario N -- scenario B under PLUMBING: the temp-index landing must leave
   # a peer's pre-staged shared-index entry alone AND the index refresh must
@@ -4077,8 +4214,8 @@ EOF
   # (Scenarios Q and V run inside the quality-gate cases above and are guarded
   # by those cases' own fail-fast assertions, not this counter.)
   echo "commit-scope scenarios run: $SCOPE_SCENARIOS_RUN"
-  if [ "$SCOPE_SCENARIOS_RUN" -ne 31 ]; then
-    echo "Expected 31 commit-scope scenarios (A-P, K2, M2, M3, P2, R-U, W-Z, Z2, AA, AB); ran $SCOPE_SCENARIOS_RUN" >&2
+  if [ "$SCOPE_SCENARIOS_RUN" -ne 33 ]; then
+    echo "Expected 33 commit-scope scenarios (A-P, K2, L2, M2, M3, M4, P2, R-U, W-Z, Z2, AA, AB); ran $SCOPE_SCENARIOS_RUN" >&2
     exit 1
   fi
 else

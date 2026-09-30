@@ -3,7 +3,7 @@ import type { StateManager } from '../state/StateManager.js';
 import type { AttributionSettings, ProjectSettings, Task, Worker } from '../types/schema.js';
 import { invalidInput, missingRequired, notFound } from '../util/errors.js';
 import { normalizeAffectedFiles } from '../util/affectedFiles.js';
-import { collectPeerPaths, collectTaskPathTiers, PathSet } from '../util/attributionTiers.js';
+import { collectDeclaredPaths, collectPeerPaths, collectTaskPathTiers, PathSet } from '../util/attributionTiers.js';
 import { isWorkerAlive, LIVENESS_TIMEOUT_MS } from '../util/workerLiveness.js';
 import { findDependencyPath } from '../state/dependencyUnblock.js';
 
@@ -34,7 +34,7 @@ function sortedById<T extends { id: string }>(items: Iterable<T>): T[] {
 export function getCommitScopeTool(_state: StateManager): ToolDefinition {
   return {
     name: 'moe.get_commit_scope',
-    description: 'Attribution scope the agent wrapper stages a task\'s commit from: the task\'s ASSERTED paths (completed steps\' modifiedFiles/affectedFiles, filesModified, declare_files, tool-written, previously committed), its PLANNED paths (plan-declared only, committed when changed since the pre-task baseline), every other open task\'s declared paths (PEER map; a peer that waits on this task contributes only its asserted paths, since it cannot have run yet), which workers are active (peersActive drives the attribution.undeclared policy), the board-state paths it may commit, and the project\'s commit policy. Read-only apart from a liveness touch; no ownership guard — an orphan-mode caller (workerId not the assignee) is counted in activePeerIds.',
+    description: 'Attribution scope the agent wrapper stages a task\'s commit from: the task\'s ASSERTED paths (completed steps\' modifiedFiles/affectedFiles, filesModified, declare_files, tool-written, previously committed), the DECLARED part of them (moe.declare_files: committed regardless of the pre-task baseline; the rest of ASSERTED only when this task produced the dirty bytes), its PLANNED paths (plan-declared only, committed when changed since the pre-task baseline), every other open task\'s declared paths (PEER map; a peer that waits on this task contributes only its asserted paths, since it cannot have run yet), which workers are active (peersActive drives the attribution.undeclared policy), the board-state paths it may commit, and the project\'s commit policy. Read-only apart from a liveness touch; no ownership guard — an orphan-mode caller (workerId not the assignee) is counted in activePeerIds.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -78,6 +78,7 @@ export function getCommitScopeTool(_state: StateManager): ToolDefinition {
 
       // ---- own tiers -------------------------------------------------------
       const tiers = collectTaskPathTiers(task);
+      const declared = collectDeclaredPaths(task);
       const touchedFiles = new PathSet().addAll(task.touchedFiles).values();
       const inferredPaths = new PathSet().addAll(task.inferredPaths).values();
       const unattributedPaths = new PathSet().addAll(task.unattributedPaths).values();
@@ -167,6 +168,9 @@ export function getCommitScopeTool(_state: StateManager): ToolDefinition {
         assignedWorkerId: task.assignedWorkerId ?? null,
         assigneeAlive,
         asserted: tiers.asserted,
+        // Additive: a wrapper that predates the field ignores it and keeps
+        // committing every asserted path regardless of its baseline.
+        declared,
         planned: tiers.planned,
         touchedFiles,
         inferredPaths,

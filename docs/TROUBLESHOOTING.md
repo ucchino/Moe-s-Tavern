@@ -527,8 +527,8 @@ pointing at `complete_task`.
 once per task per 24h, to `#governors`), and those paths are still dirty.
 
 Each dirty path is classified once per landing, in this order: **BOARD** (own task record) →
-**DENY** → **ASSERTED**/**TOOL** → **PEER** → baseline diff → **PLANNED** → **MEASURED** →
-unattributed. The codes:
+**DENY** → **ASSERTED**/**TOOL** (an asserted path must also carry bytes this task produced) →
+**PEER** → baseline diff → **PLANNED** → **MEASURED** → unattributed. The codes:
 
 | Code | Meaning | What to do |
 |---|---|---|
@@ -538,6 +538,7 @@ unattributed. The codes:
 | `MOE_ATTR_CONTESTED` | In this task's ASSERTED or TOOL scope **and** declared by another nonterminal task, with `settings.attribution.contested: "skip"` | Resolve ownership before choosing an applicable policy. An explicit `"commit"` permits whole-path landing with a `Moe-Contested: <path> (task-<peer>)` trailer; it does not establish ownership of the file's changes. |
 | `MOE_ATTR_IMPORTEE_MISSING(<specifier>)` | A supported literal relative import has no matching path in the resulting commit. This checks path presence, including TypeScript source candidates for emitted module paths; it does not certify compiler or runtime validity | If this task owns the importee, declare it so both paths can pass attribution together; otherwise wait for its owner to land it; the path is re-attempted at the next exit and is reported as `MOE_ATTRIBUTION_UNRESOLVED` meanwhile. |
 | `MOE_ATTR_PREEXISTING` | Dirty before this task's first session and byte-identical now — the hard constraint: a path the task never asserted and never changed is never committed | Nothing for this task. Debris left by a DONE task → "Dirty paths owned only by DONE tasks" below. |
+| `MOE_ATTR_ASSERTED_FOREIGN` | Asserted by this task only through its history (`filesModified`, a completed step's `modifiedFiles`/`affectedFiles`, an earlier commit, an earlier session's tool writes; never `moe.declare_files`), but the bytes were already dirty when the landing session's pre-flight ran and are untouched since, so this task did not produce them. A crash recovery compares against the dead session's own pre-flight. The 2026-09-30 shape: someone's uncommitted edit to a file a task delivered days earlier | Find who made the edit (`git diff -- <path>`, chat, the other live tasks). If those bytes really are this task's, `moe.declare_files { taskId, paths }` and the next exit lands them; otherwise leave the path for its owner. The task's next edit to the path also lands it (whole file, including the existing hunks). |
 | `MOE_ATTR_MISSING` | An asserted path exists neither on disk nor in HEAD (renamed / deleted / edited in a worktree), or is gitignored | Fix the path or the plan's `affectedFiles`. Deletions of tracked files stage naturally and never hit this. |
 | `MOE_ATTR_CONCURRENT` | The staged blob no longer matched the snapshot — a peer wrote the file between the snapshot and `add` | Nothing — retried at the next exit. |
 | `MOE_ATTRIBUTION_UNRESOLVED` | Changed since the baseline, not asserted, not planned, not tool-written, and `attribution.undeclared` forbade a MEASURED commit (default `solo` while another worker is live) | Persisted in `task.unattributedPaths` and shown to the resuming session. Claim it with `moe.declare_files { taskId, paths }` (governor or worker) so the next exit lands it — or set `attribution.undeclared: "always"` on a single-seat project. |

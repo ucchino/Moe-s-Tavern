@@ -13,6 +13,7 @@ interface ScopeResult {
   assignedWorkerId: string | null;
   assigneeAlive: boolean;
   asserted: string[];
+  declared: string[];
   planned: string[];
   touchedFiles: string[];
   inferredPaths: string[];
@@ -115,6 +116,42 @@ describe('moe.get_commit_scope', () => {
     const result = await scope();
     expect(sortedKeys(result.asserted)).toEqual(sortedKeys(completeTaskFilesModified));
     expect(sortedKeys(result.planned)).toEqual(sortedKeys(['x/three.ts']));
+    // No moe.declare_files on this task: nothing is committed regardless of the baseline.
+    expect(result.declared).toEqual([]);
+  });
+
+  it('serves the moe.declare_files paths separately as `declared`, a normalized subset of asserted', async () => {
+    h.setupMoeFolder();
+    h.createEpic();
+    h.createTask({
+      id: 'task-1',
+      status: 'REVIEW',
+      implementationPlan: [
+        { stepId: 's1', description: 'a', status: 'COMPLETED', affectedFiles: ['src/step.ts'], modifiedFiles: ['src/step.ts'] },
+      ],
+      // History (filesModified/touched/committed) is asserted but NOT declared:
+      // the wrapper commits it only when this task produced the dirty bytes.
+      filesModified: ['src/delivered.ts'],
+      touchedFiles: ['src/touched.ts'],
+      commits: [{
+        sha: 'abc1234', ref: 'moe/work-2026-09-30', kind: 'completion', role: 'worker', sessionId: 'worker-1@t',
+        paths: ['src/committed.ts'], recordedBy: 'worker-1', recordedAt: '2026-09-30T00:00:00.000Z',
+      }],
+      // Explicit declarations: worker-typed spellings, a duplicate, and an
+      // un-storable entry that must be dropped rather than fail the scope.
+      declaredFiles: ['./src/rescued.ts', 'src\\helper.ts', 'src/rescued.ts', '../outside.ts'],
+    });
+    await h.state.load();
+
+    const result = await scope({ workerId: 'worker-1' });
+
+    expect(result.declared).toEqual(['src/rescued.ts', 'src/helper.ts']);
+    const assertedKeys = new Set(result.asserted.map(pathKey));
+    for (const p of result.declared) expect(assertedKeys.has(pathKey(p))).toBe(true);
+    for (const p of ['src/step.ts', 'src/delivered.ts', 'src/touched.ts', 'src/committed.ts']) {
+      expect(assertedKeys.has(pathKey(p))).toBe(true);
+      expect(result.declared.map(pathKey)).not.toContain(pathKey(p));
+    }
   });
 
   it('builds the PEER map from every other open task and excludes DONE/ARCHIVED', async () => {

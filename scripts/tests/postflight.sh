@@ -4210,12 +4210,50 @@ EOF
   SCOPE_SCENARIOS_RUN=$((SCOPE_SCENARIOS_RUN + 1))
   echo "[scenario AB] ok"
 
+  # Scenario AB2 -- the retained hold is not an adoption. A seat whose own task
+  # is BLOCKED (a resource wait) relaunches notification-only to answer a routed
+  # mention; at exit it still holds that same task, so the binding is RETAINED.
+  # The refusal must still print (nothing may land without a baseline) but must
+  # NOT page #governors: every such relaunch found the same foreign shared dirt,
+  # and the page carried no news (7 in one hour on 2026-09-30).
+  echo "[scenario AB2] a notification-only relaunch onto a retained BLOCKED hold refuses quietly"
+  SCOPE_AB2_DIR="$TMP_DIR/scope-ab2"
+  make_scope_project "$SCOPE_AB2_DIR" '[]'
+  echo peer-base > "$SCOPE_AB2_DIR/peer-mod.txt"
+  git -C "$SCOPE_AB2_DIR" add peer-mod.txt >/dev/null
+  git -C "$SCOPE_AB2_DIR" commit -qm peer-base >/dev/null
+  echo peer-dirty > "$SCOPE_AB2_DIR/peer-mod.txt"
+  scope_ab2_head="$(git -C "$SCOPE_AB2_DIR" rev-parse HEAD)"
+  set +e
+  FAKE_CLAIM_MODE=blocked FAKE_MENTION=1 FAKE_ADOPTED_TASK_ID=task-blocked MOE_TASKLESS_WAIT_SEC=5 \
+    run_scope_wrapper "$SCOPE_AB2_DIR" "$TMP_DIR/scope-ab2.out" "$FILE_CLI" worker worker-scope-ab2
+  scope_ab2_code=$?
+  set -e
+  FAKE_CLAIM_MODE=""; FAKE_MENTION=""; FAKE_ADOPTED_TASK_ID=""
+  [ "$scope_ab2_code" -eq 0 ] || scope_fail AB2 "wrapper exited with $scope_ab2_code" "$TMP_DIR/scope-ab2.out"
+  [ -f "$SCOPE_AB2_DIR/session-new.txt" ] \
+    || scope_fail AB2 "the notification-only session was never launched, so the retained path was not exercised" "$TMP_DIR/scope-ab2.out"
+  grep -Fq 'MOE_COMMIT_REFUSED_ADOPTED_NO_BASELINE task=task-blocked worker=worker-scope-ab2 binding=retained' "$TMP_DIR/scope-ab2.out" \
+    || scope_fail AB2 "the retained hold must still refuse under the named code with binding=retained" "$TMP_DIR/scope-ab2.out"
+  if [ "$(git -C "$SCOPE_AB2_DIR" rev-parse HEAD)" != "$scope_ab2_head" ]; then
+    scope_fail AB2 "the refusal still moved the branch -- nothing may land without a baseline" "$TMP_DIR/scope-ab2.out"
+  fi
+  if ! git -C "$SCOPE_AB2_DIR" status --porcelain | grep -q '^ M peer-mod\.txt$'; then
+    git -C "$SCOPE_AB2_DIR" status --porcelain >&2 || true
+    scope_fail AB2 "the peer's dirty file must be untouched by the refusal" "$TMP_DIR/scope-ab2.out"
+  fi
+  if grep -Fq 'MOE_COMMIT_REFUSED_ADOPTED_NO_BASELINE' "$SCOPE_AB2_DIR/.moe/messages/chan-general.jsonl" 2>/dev/null; then
+    scope_fail AB2 "a retained hold must not page #governors -- the relaunch edited nothing and the page carries no news" "$TMP_DIR/scope-ab2.out"
+  fi
+  SCOPE_SCENARIOS_RUN=$((SCOPE_SCENARIOS_RUN + 1))
+  echo "[scenario AB2] ok"
+
   # A harness that silently generated zero scenarios exits 0 and reads as green.
   # (Scenarios Q and V run inside the quality-gate cases above and are guarded
   # by those cases' own fail-fast assertions, not this counter.)
   echo "commit-scope scenarios run: $SCOPE_SCENARIOS_RUN"
-  if [ "$SCOPE_SCENARIOS_RUN" -ne 33 ]; then
-    echo "Expected 33 commit-scope scenarios (A-P, K2, L2, M2, M3, M4, P2, R-U, W-Z, Z2, AA, AB); ran $SCOPE_SCENARIOS_RUN" >&2
+  if [ "$SCOPE_SCENARIOS_RUN" -ne 34 ]; then
+    echo "Expected 34 commit-scope scenarios (A-P, K2, L2, M2, M3, M4, P2, R-U, W-Z, Z2, AA, AB, AB2); ran $SCOPE_SCENARIOS_RUN" >&2
     exit 1
   fi
 else

@@ -6933,8 +6933,15 @@ $mentionsJson
                 # No baseline means no safe attribution, and the task rails
                 # forbid inventing one or staging the tree. Say what that costs.
                 Write-Host "MOE_COMMIT_REFUSED_ADOPTED_NO_BASELINE task=$adoptedTaskId worker=$WorkerId binding=$adoptedBinding dirty=$($adoptedDirty.Count) - no session baseline exists; refusing to guess attribution or land. Shared dirty paths do not establish this session's ownership. Preserve them and identify their owners before any delivery action." -ForegroundColor Red
-                if ($generalChannelId) {
-                    $adoptMsg = "@governors ${WorkerId}: MOE_COMMIT_REFUSED_ADOPTED_NO_BASELINE task=$adoptedTaskId binding=$adoptedBinding - no session baseline; refusing to land $($adoptedDirty.Count) unattributed shared dirty path(s). Shared dirty paths do not establish this session's ownership. Preserve them and identify their owners; a retained blocked hold is not a new adoption."
+                # A retained hold is the seat's own BLOCKED task, seen at
+                # pre-flight: a notification-only relaunch onto it edits nothing
+                # and finds only foreign shared dirt, so paging #governors on
+                # every relaunch says nothing new (7 pages in one hour on
+                # 2026-09-30, all binding=retained, all the same paths). The
+                # local line above still names it; only an UNVERIFIED binding
+                # -- a task this seat did not hold at pre-flight -- pages.
+                if ($generalChannelId -and $adoptedBinding -ne "retained") {
+                    $adoptMsg = "@governors ${WorkerId}: MOE_COMMIT_REFUSED_ADOPTED_NO_BASELINE task=$adoptedTaskId binding=$adoptedBinding - no session baseline; refusing to land $($adoptedDirty.Count) unattributed shared dirty path(s). Shared dirty paths do not establish this session's ownership. Preserve them and identify their owners."
                     try { Invoke-MoeRpc -Tool "chat_send" -Args @{ channel = $generalChannelId; workerId = $WorkerId; content = $adoptMsg } | Out-Null } catch {}
                 }
             }

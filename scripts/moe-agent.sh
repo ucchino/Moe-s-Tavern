@@ -7988,8 +7988,15 @@ except Exception:
                 # No baseline means no safe attribution, and the task rails
                 # forbid inventing one or staging the tree. Say what that costs.
                 echo "MOE_COMMIT_REFUSED_ADOPTED_NO_BASELINE task=$ADOPTED_TASK_ID worker=$WORKER_ID binding=$ADOPTED_BINDING dirty=$ADOPTED_DIRTY - no session baseline exists; refusing to guess attribution or land. Shared dirty paths do not establish this session's ownership. Preserve them and identify their owners before any delivery action."
-                if [ -n "$GENERAL_CHANNEL_ID" ]; then
-                    ADOPT_MSG="@governors ${WORKER_ID}: MOE_COMMIT_REFUSED_ADOPTED_NO_BASELINE task=$ADOPTED_TASK_ID binding=$ADOPTED_BINDING - no session baseline; refusing to land $ADOPTED_DIRTY unattributed shared dirty path(s). Shared dirty paths do not establish this session's ownership. Preserve them and identify their owners; a retained blocked hold is not a new adoption."
+                # A retained hold is the seat's own BLOCKED task, seen at
+                # pre-flight: a notification-only relaunch onto it edits nothing
+                # and finds only foreign shared dirt, so paging #governors on
+                # every relaunch says nothing new (7 pages in one hour on
+                # 2026-09-30, all binding=retained, all the same paths). The
+                # local line above still names it; only an UNVERIFIED binding
+                # -- a task this seat did not hold at pre-flight -- pages.
+                if [ -n "$GENERAL_CHANNEL_ID" ] && [ "$ADOPTED_BINDING" != retained ]; then
+                    ADOPT_MSG="@governors ${WORKER_ID}: MOE_COMMIT_REFUSED_ADOPTED_NO_BASELINE task=$ADOPTED_TASK_ID binding=$ADOPTED_BINDING - no session baseline; refusing to land $ADOPTED_DIRTY unattributed shared dirty path(s). Shared dirty paths do not establish this session's ownership. Preserve them and identify their owners."
                     moe_rpc chat_send \
                         "$($PYTHON_CMD -c "import json,sys; print(json.dumps({'channel':sys.argv[1],'workerId':sys.argv[2],'content':sys.argv[3]}))" "$GENERAL_CHANNEL_ID" "$WORKER_ID" "$ADOPT_MSG" 2>/dev/null)" \
                         > /dev/null 2>&1 || true

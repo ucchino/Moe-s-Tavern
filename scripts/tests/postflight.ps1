@@ -3583,11 +3583,62 @@ else {
                 $scopeScenariosRun++
                 Write-Host '[scenario AB] ok'
 
+                # Scenario AB2 -- the retained hold is not an adoption. A seat
+                # whose own task is BLOCKED (a resource wait) relaunches
+                # notification-only to answer a routed mention; at exit it still
+                # holds that same task, so the binding is RETAINED. The refusal
+                # must still print (nothing may land without a baseline) but
+                # must NOT page #governors: every such relaunch found the same
+                # foreign shared dirt, and the page carried no news.
+                Write-Host '[scenario AB2] a notification-only relaunch onto a retained BLOCKED hold refuses quietly'
+                $scopeAB2Dir = Join-Path $tempRoot 'scope-ab2'
+                New-ScopeProject $scopeAB2Dir @()
+                Set-Content -Path (Join-Path $scopeAB2Dir 'peer-mod.txt') -Value 'peer-base'
+                & git -C $scopeAB2Dir add peer-mod.txt 2>$null | Out-Null
+                & git -C $scopeAB2Dir commit -qm peer-base 2>$null | Out-Null
+                Set-Content -Path (Join-Path $scopeAB2Dir 'peer-mod.txt') -Value 'peer-dirty'
+                $scopeAB2Head = ((& git -C $scopeAB2Dir rev-parse HEAD 2>$null) -join '')
+                $scopeAB2Out = Join-Path $tempRoot 'scope-ab2.out'
+                $env:FAKE_CLAIM_MODE = 'blocked'
+                $env:FAKE_MENTION = '1'
+                $env:FAKE_ADOPTED_TASK_ID = 'task-resume'
+                $env:MOE_TASKLESS_WAIT_SEC = '5'
+                try {
+                    Assert-ScopeRun 'AB2' (Invoke-GateWrapper $scopeAB2Dir $scopeAB2Out 'REVIEW' $createFileCmd 'worker' 'worker-scope-ab2') $scopeAB2Out
+                } finally {
+                    Remove-Item Env:FAKE_CLAIM_MODE -ErrorAction SilentlyContinue
+                    Remove-Item Env:FAKE_MENTION -ErrorAction SilentlyContinue
+                    Remove-Item Env:FAKE_ADOPTED_TASK_ID -ErrorAction SilentlyContinue
+                    Remove-Item Env:MOE_TASKLESS_WAIT_SEC -ErrorAction SilentlyContinue
+                }
+                if (-not (Test-Path (Join-Path $scopeAB2Dir 'session-new.txt'))) {
+                    Get-Content $scopeAB2Out -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_ }
+                    throw 'SCENARIO AB2 FAILED: the notification-only session was never launched, so the retained path was not exercised'
+                }
+                $scopeAB2Text = Get-Content -Raw -Path $scopeAB2Out
+                if (-not $scopeAB2Text.Contains('MOE_COMMIT_REFUSED_ADOPTED_NO_BASELINE task=task-resume worker=worker-scope-ab2 binding=retained')) {
+                    Write-Host $scopeAB2Text
+                    throw 'SCENARIO AB2 FAILED: the retained hold must still refuse under the named code with binding=retained'
+                }
+                if (((& git -C $scopeAB2Dir rev-parse HEAD 2>$null) -join '') -ne $scopeAB2Head) {
+                    throw 'SCENARIO AB2 FAILED: the refusal still moved the branch -- nothing may land without a baseline'
+                }
+                $scopeAB2Status = @(& git -C $scopeAB2Dir status --porcelain 2>$null)
+                if ($scopeAB2Status -notcontains ' M peer-mod.txt') {
+                    throw "SCENARIO AB2 FAILED: the peer's dirty file must be untouched by the refusal; status was [$($scopeAB2Status -join '|')]"
+                }
+                $scopeAB2Chat = Get-Content -Raw -Path (Join-Path $scopeAB2Dir '.moe\messages\chan-general.jsonl') -ErrorAction SilentlyContinue
+                if ($scopeAB2Chat -and $scopeAB2Chat.Contains('MOE_COMMIT_REFUSED_ADOPTED_NO_BASELINE')) {
+                    throw 'SCENARIO AB2 FAILED: a retained hold must not page #governors -- the relaunch edited nothing and the page carries no news'
+                }
+                $scopeScenariosRun++
+                Write-Host '[scenario AB2] ok'
+
                 # A harness that silently generated zero scenarios exits 0 and
                 # reads as green.
                 Write-Host "commit-scope scenarios run: $scopeScenariosRun"
-                if ($scopeScenariosRun -ne 33) {
-                    throw "Expected 33 commit-scope scenarios (A-V, K2, L2, M2, M3, M4, P2, X-Z, AA, AB); ran $scopeScenariosRun"
+                if ($scopeScenariosRun -ne 34) {
+                    throw "Expected 34 commit-scope scenarios (A-V, K2, L2, M2, M3, M4, P2, X-Z, AA, AB, AB2); ran $scopeScenariosRun"
                 }
 
                 $gateFailCommits = [int](& git -C $gateFailDir rev-list --count HEAD 2>$null)

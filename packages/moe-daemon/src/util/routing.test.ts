@@ -100,7 +100,10 @@ describe('routing tiers', () => {
     expect(allowedEfforts(undefined, true)).toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
     expect(clampEffort('low', undefined, true)).toBe('low');
     expect(bumpEffort('medium', undefined, true)).toBe('high');
-    expect(resolveLaunch({ tier: 'standard', status: 'WORKING', lowEffortEligible: true })?.effort).toBe('medium');
+    // Eligibility widens what the planner may pick; the omitted default stays the tier's
+    // (a tests-only file list can still be a heavy batch that runs every gate).
+    expect(resolveLaunch({ tier: 'standard', status: 'WORKING', lowEffortEligible: true })?.effort).toBe('xhigh');
+    expect(resolveLaunch({ tier: 'heavy', status: 'WORKING', lowEffortEligible: true })?.effort).toBe('max');
     expect(resolveLaunch({ tier: 'light', status: 'WORKING', effort: 'low', lowEffortEligible: true })?.effort).toBe('low');
   });
 });

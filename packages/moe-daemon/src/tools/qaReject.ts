@@ -254,7 +254,7 @@ export function qaRejectTool(_state: StateManager): ToolDefinition {
               const settings = state.project?.settings;
               const tier = isTier(task.tier) ? task.tier : planSizeFloor(task.implementationPlan ?? [], settings);
               const low = task.lowEffortEligible === true;
-              const effort = isEffort(task.effort) ? task.effort : tierEffort(tier, settings, low);
+              const effort = isEffort(task.effort) ? task.effort : tierEffort(tier, settings);
               return {
                 tier: bumpTier(tier),
                 effort: bumpEffort(effort, settings, low),

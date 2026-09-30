@@ -23,7 +23,6 @@ export const DEFAULT_LOW_EFFORTS: readonly Effort[] = ['low', 'medium'];
 export const DEFAULT_LOW_EFFORT_FILES: readonly string[] = [
   '**/*.md', 'docs/**', '**/*.test.*', '**/*.spec.*', '**/tests/**', '**/__tests__/**',
 ];
-const LOW_EFFORT_DEFAULT: Effort = 'medium';
 const DEFAULT_EFFORT: Record<TaskTier, Effort> = {
   light: 'high',
   standard: 'xhigh',
@@ -204,10 +203,11 @@ export function modelsForTier(
 
 /**
  * The tier's configured effort, else its default — raised to an allowed level.
- * A docs/tests-only plan defaults to medium instead.
+ * A docs/tests-only plan gets it too: eligibility lets the planner pick
+ * low/medium explicitly, never lowers the omitted default (a tests-only file
+ * list can still be heavy work, e.g. writing a batch's tests and running every gate).
  */
-export function tierEffort(tier: TaskTier, settings?: Pick<ProjectSettings, 'routing'>, lowEffortEligible = false): Effort {
-  if (lowEffortEligible) return clampEffort(LOW_EFFORT_DEFAULT, settings, true);
+export function tierEffort(tier: TaskTier, settings?: Pick<ProjectSettings, 'routing'>): Effort {
   const effort = tierEntry(tier, settings).effort;
   return clampEffort(isEffort(effort) ? effort : DEFAULT_EFFORT[tier], settings);
 }
@@ -223,8 +223,7 @@ export function routingInfo(settings?: Pick<ProjectSettings, 'routing'>) {
     lowEffort: {
       files: lowEffortFiles(settings),
       efforts: allowedEfforts(settings, true),
-      defaultEffort: tierEffort('light', settings, true),
-      note: 'A plan whose every file matches these globs (docs/tests-only) may also run at these lower efforts; the daemon decides it from the plan.',
+      note: 'A plan whose every file matches these globs (docs/tests-only) may also run at these lower efforts when you pick one explicitly; omitted, it gets the tier default like any plan. The daemon decides eligibility from the plan.',
     },
     tierDefaults: Object.fromEntries(TIERS.map((tier) => [tier, {
       effort: tierEffort(tier, settings),
@@ -251,7 +250,7 @@ export function resolveLaunch(
   // The tier sizes the worker/QA sessions; planning keeps the role default.
   if (!isTier(task.tier) || settings?.routing?.enabled === false || task.status === 'PLANNING') return undefined;
   const low = task.lowEffortEligible === true;
-  const effort = isEffort(task.effort) ? clampEffort(task.effort, settings, low) : tierEffort(task.tier, settings, low);
+  const effort = isEffort(task.effort) ? clampEffort(task.effort, settings, low) : tierEffort(task.tier, settings);
   const entryModel = tierEntry(task.tier, settings).model;
   const model = typeof task.model === 'string' && modelsForTier(task.tier, settings).includes(task.model)
     ? task.model

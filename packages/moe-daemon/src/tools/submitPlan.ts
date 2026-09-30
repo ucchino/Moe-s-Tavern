@@ -146,7 +146,7 @@ export function submitPlanTool(_state: StateManager): ToolDefinition {
         effort: {
           type: 'string',
           enum: ['low', 'medium', 'high', 'xhigh', 'max'],
-          description: 'Reasoning effort for the worker and QA sessions, picked for how hard the work is: high = routine work, xhigh = normal work and most coding, max = subtle or cross-cutting work. Only the allowed levels in get_context routing.efforts are used (default high, xhigh, max); anything else, or anything below the tier minimum (light/standard: high, heavy: xhigh), is raised and the response says so. Exception: a docs/tests-only plan (every file matches routing.lowEffort.files, decided from the plan) may also use low or medium, defaults to medium and has no tier minimum. Omit for the default (light high, standard xhigh, heavy max).'
+          description: 'Reasoning effort for the worker and QA sessions, picked for how hard the work is: high = routine work, xhigh = normal work and most coding, max = subtle or cross-cutting work. Only the allowed levels in get_context routing.efforts are used (default high, xhigh, max); anything else, or anything below the tier minimum (light/standard: high, heavy: xhigh), is raised and the response says so. Exception: a docs/tests-only plan (every file matches routing.lowEffort.files, decided from the plan) may also use low or medium when you pick it explicitly, and has no tier minimum. Omit for the tier default (light high, standard xhigh, heavy max), which a docs/tests-only plan gets too.'
         },
         model: {
           type: 'string',

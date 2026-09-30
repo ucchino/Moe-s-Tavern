@@ -280,7 +280,7 @@ describe('SPEED mode timeout cancellation', () => {
   it('allows low effort only for a docs/tests-only plan, decided from its files', async () => {
     setupMoeFolder();
     createEpic();
-    for (const id of ['task-d1', 'task-d2', 'task-d3']) createTask({ id, status: 'PLANNING', order: Number(id.at(-1)) });
+    for (const id of ['task-d1', 'task-d2', 'task-d3', 'task-d4']) createTask({ id, status: 'PLANNING', order: Number(id.at(-1)) });
     await state.load();
     const tool = submitPlanTool(state);
     type R = { lowEffort?: string; effortRaised?: { to: string }; launch: { effort: string } };
@@ -305,6 +305,13 @@ describe('SPEED mode timeout cancellation', () => {
     }, state) as R;
     expect(mixed.lowEffort).toBeUndefined();
     expect(mixed.launch.effort).toBe('high');
+
+    // Eligible but no effort picked: the tier default, never an implicit low level.
+    const tests = await tool.handler({
+      taskId: 'task-d4', tier: 'heavy', steps: [{ description: 'Batch tests', newFiles: ['pkg/tests/test_batch.py'] }],
+    }, state) as R;
+    expect(tests.lowEffort).toBe('docs/tests-only: low effort allowed');
+    expect(tests.launch.effort).toBe('max');
   });
 
   it('scrubs failedDodItems on a fresh plan so the same-item net counts only within the new attempt', async () => {

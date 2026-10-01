@@ -4605,18 +4605,23 @@ announce_checkpoint_unpushed() { # $1 taskId, $2 branch
     return 0
 }
 
-# push_branch KIND -- today's push (`-u` on first push, one `pull --rebase`
-# retry, `rebase --abort` on conflict). Banners per kind: completion ->
-# `PUSH FAILED ... do not review until pushed`; checkpoint ->
-# `CHECKPOINT-UNPUSHED task=<id>`. Note `pull --rebase` refuses in a tree with
-# unstaged tracked changes, so the retry usually fails in a busy fleet --
-# unpushed is a visibility problem, not a loss. Returns 0 when pushed.
+# push_branch KIND -- today's push (`-u` on first push). A rejected push is
+# announced, never repaired: the launcher does not `pull --rebase` the checkout
+# it lands in, because that checkout is shared with every other seat -- a
+# rebase replays peers' unlanded commits, rewrites the working tree under their
+# concurrent landings and drops the files a replayed commit stops tracking.
+# MOE_PUSH_REBASE=1 restores the one `pull --rebase` retry (`rebase --abort` on
+# conflict) for a seat that owns a private checkout. Banners per kind:
+# completion -> `PUSH FAILED ... do not review until pushed`; checkpoint ->
+# `CHECKPOINT-UNPUSHED task=<id>` -- unpushed is a visibility problem, not a
+# loss. Returns 0 when pushed.
 # LAND_PUSH_RESULT is what a delivery receipt reports: empty (null) when no push
 # was attempted (the repository has no remote at all), else one bounded line. A
 # `git remote` probe that fails falls through to the push, so it can never
 # silently stop one.
 push_branch() {
     local kind="$1" branch="$LAND_BRANCH" tid="$LAND_TASK_ID" PUSH_OUT="" REBASE_OUT="" ok=false why
+    local rejected="git push rejected (the remote moved?) -- not rebasing a shared checkout: a pull --rebase here replays peers' unlanded commits under their landings (MOE_PUSH_REBASE=1 opts a private checkout back in); sync it by hand or deliver from an isolated clone."
     LAND_PUSH_RESULT=""
     [ -n "$branch" ] || return 1
     if no_git_remote; then
@@ -4628,19 +4633,23 @@ push_branch() {
             ok=true
         else
             printf '%s\n' "$PUSH_OUT" | tail -5
-            echo -e "${YELLOW}[WARN]${NC} git push failed; trying git pull --rebase then re-push..."
-            if REBASE_OUT=$(git -C "$MOE_TOP" pull --rebase 2>&1); then
-                printf '%s\n' "$REBASE_OUT" | tail -5
-                if PUSH_OUT=$(git -C "$MOE_TOP" push 2>&1); then
-                    ok=true
+            if [ "${MOE_PUSH_REBASE:-0}" = 1 ]; then
+                echo -e "${YELLOW}[WARN]${NC} git push failed; MOE_PUSH_REBASE=1: trying git pull --rebase then re-push..."
+                if REBASE_OUT=$(git -C "$MOE_TOP" pull --rebase 2>&1); then
+                    printf '%s\n' "$REBASE_OUT" | tail -5
+                    if PUSH_OUT=$(git -C "$MOE_TOP" push 2>&1); then
+                        ok=true
+                    else
+                        printf '%s\n' "$PUSH_OUT" | tail -5
+                        echo -e "${YELLOW}[WARN]${NC} git push still failing (auth? network? conflict?) -- resolve and push manually."
+                    fi
                 else
-                    printf '%s\n' "$PUSH_OUT" | tail -5
-                    echo -e "${YELLOW}[WARN]${NC} git push still failing (auth? network? conflict?) -- resolve and push manually."
+                    printf '%s\n' "$REBASE_OUT" | tail -5
+                    git -C "$MOE_TOP" rebase --abort 2>/dev/null || true
+                    echo -e "${YELLOW}[WARN]${NC} git pull --rebase failed (conflict? unstaged changes?); aborted rebase to restore a clean tree -- resolve and push manually."
                 fi
             else
-                printf '%s\n' "$REBASE_OUT" | tail -5
-                git -C "$MOE_TOP" rebase --abort 2>/dev/null || true
-                echo -e "${YELLOW}[WARN]${NC} git pull --rebase failed (conflict? unstaged changes?); aborted rebase to restore a clean tree -- resolve and push manually."
+                echo -e "${YELLOW}[WARN]${NC} $rejected"
             fi
         fi
     else
@@ -4648,19 +4657,23 @@ push_branch() {
             ok=true
         else
             printf '%s\n' "$PUSH_OUT" | tail -5
-            echo -e "${YELLOW}[WARN]${NC} git push failed; trying git pull --rebase then re-push..."
-            if REBASE_OUT=$(git -C "$MOE_TOP" pull --rebase origin "$branch" 2>&1); then
-                printf '%s\n' "$REBASE_OUT" | tail -5
-                if PUSH_OUT=$(git -C "$MOE_TOP" push -u origin "$branch" 2>&1); then
-                    ok=true
+            if [ "${MOE_PUSH_REBASE:-0}" = 1 ]; then
+                echo -e "${YELLOW}[WARN]${NC} git push failed; MOE_PUSH_REBASE=1: trying git pull --rebase then re-push..."
+                if REBASE_OUT=$(git -C "$MOE_TOP" pull --rebase origin "$branch" 2>&1); then
+                    printf '%s\n' "$REBASE_OUT" | tail -5
+                    if PUSH_OUT=$(git -C "$MOE_TOP" push -u origin "$branch" 2>&1); then
+                        ok=true
+                    else
+                        printf '%s\n' "$PUSH_OUT" | tail -5
+                        echo -e "${YELLOW}[WARN]${NC} git push still failing (auth? network? conflict?) -- resolve and push manually."
+                    fi
                 else
-                    printf '%s\n' "$PUSH_OUT" | tail -5
-                    echo -e "${YELLOW}[WARN]${NC} git push still failing (auth? network? conflict?) -- resolve and push manually."
+                    printf '%s\n' "$REBASE_OUT" | tail -5
+                    git -C "$MOE_TOP" rebase --abort 2>/dev/null || true
+                    echo -e "${YELLOW}[WARN]${NC} git pull --rebase failed (conflict? unstaged changes?); aborted rebase to restore a clean tree -- resolve and push manually."
                 fi
             else
-                printf '%s\n' "$REBASE_OUT" | tail -5
-                git -C "$MOE_TOP" rebase --abort 2>/dev/null || true
-                echo -e "${YELLOW}[WARN]${NC} git pull --rebase failed (conflict? unstaged changes?); aborted rebase to restore a clean tree -- resolve and push manually."
+                echo -e "${YELLOW}[WARN]${NC} $rejected"
             fi
         fi
     fi

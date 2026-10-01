@@ -3855,7 +3855,8 @@ function Test-MoeNoRemote([string]$Top) {
     return ($r.Rc -eq 0 -and -not ($r.Out -join '').Trim())
 }
 
-# Today's push (+ one pull --rebase retry) with per-kind banners. Returns $true
+# Today's push with per-kind banners; the one pull --rebase retry is opt-in
+# (MOE_PUSH_REBASE=1, sh twin parity). Returns $true
 # when the branch is on the remote afterwards. $script:MoePushResult is what a
 # delivery receipt reports: $null when no push was attempted (no remote), else
 # one bounded line.
@@ -3879,34 +3880,40 @@ function Push-MoeBranch([string]$Top, [string]$Branch, [string]$Kind, [string]$T
         $script:MoePushResult = "pushed $Branch"
         return $true
     }
-    # The common cause is a non-fast-forward on the shared moe/work-* branch:
-    # pull --rebase then re-push once. NOTE: pull --rebase refuses in a tree
-    # with unstaged tracked changes, so in a busy fleet this retry usually
-    # fails — unpushed is a visibility problem, not a loss.
-    Write-Host "[WARN] git push failed; trying git pull --rebase then re-push..." -ForegroundColor Yellow
-    if ($hasUpstream) {
-        $pr = Invoke-MoeGit -Top $Top -GitArgs @('pull', '--rebase') -MergeStderr
-    } else {
-        # The failed `push -u` never configured an upstream, so a bare
-        # `pull --rebase` dies with "no tracking information" — name the
-        # remote branch instead, exactly as the sh twin does.
-        $pr = Invoke-MoeGit -Top $Top -GitArgs @('pull', '--rebase', 'origin', $Branch) -MergeStderr
-    }
-    $pr.Out | Select-Object -Last 5 | ForEach-Object { Write-Host "  $_" }
-    $rebaseOk = ($pr.Rc -eq 0)
+    # A rejected push is announced, never repaired: the launcher does not
+    # `pull --rebase` the checkout it lands in, because that checkout is shared
+    # with every other seat — a rebase replays peers' unlanded commits, rewrites
+    # the working tree under their concurrent landings and drops the files a
+    # replayed commit stops tracking. MOE_PUSH_REBASE=1 restores the one retry
+    # for a seat that owns a private checkout (sh twin parity).
     $pushOk = $false
-    if ($rebaseOk) {
+    if ($env:MOE_PUSH_REBASE -eq '1') {
+        Write-Host "[WARN] git push failed; MOE_PUSH_REBASE=1: trying git pull --rebase then re-push..." -ForegroundColor Yellow
         if ($hasUpstream) {
-            $p2 = Invoke-MoeGit -Top $Top -GitArgs @('push') -MergeStderr
+            $pr = Invoke-MoeGit -Top $Top -GitArgs @('pull', '--rebase') -MergeStderr
         } else {
-            $p2 = Invoke-MoeGit -Top $Top -GitArgs @('push', '-u', 'origin', $Branch) -MergeStderr
+            # The failed `push -u` never configured an upstream, so a bare
+            # `pull --rebase` dies with "no tracking information" — name the
+            # remote branch instead, exactly as the sh twin does.
+            $pr = Invoke-MoeGit -Top $Top -GitArgs @('pull', '--rebase', 'origin', $Branch) -MergeStderr
         }
-        $p2.Out | Select-Object -Last 5 | ForEach-Object { Write-Host "  $_" }
-        $pushOk = ($p2.Rc -eq 0)
+        $pr.Out | Select-Object -Last 5 | ForEach-Object { Write-Host "  $_" }
+        $rebaseOk = ($pr.Rc -eq 0)
+        if ($rebaseOk) {
+            if ($hasUpstream) {
+                $p2 = Invoke-MoeGit -Top $Top -GitArgs @('push') -MergeStderr
+            } else {
+                $p2 = Invoke-MoeGit -Top $Top -GitArgs @('push', '-u', 'origin', $Branch) -MergeStderr
+            }
+            $p2.Out | Select-Object -Last 5 | ForEach-Object { Write-Host "  $_" }
+            $pushOk = ($p2.Rc -eq 0)
+        } else {
+            # A rebase that stopped on a conflict must not leave the tree mid-rebase.
+            $st = Invoke-MoeGit -Top $Top -GitArgs @('rev-parse', '-q', '--verify', 'REBASE_HEAD')
+            if ($st.Rc -eq 0) { Invoke-MoeGit -Top $Top -GitArgs @('rebase', '--abort') | Out-Null }
+        }
     } else {
-        # A rebase that stopped on a conflict must not leave the tree mid-rebase.
-        $st = Invoke-MoeGit -Top $Top -GitArgs @('rev-parse', '-q', '--verify', 'REBASE_HEAD')
-        if ($st.Rc -eq 0) { Invoke-MoeGit -Top $Top -GitArgs @('rebase', '--abort') | Out-Null }
+        Write-Host "[WARN] git push rejected (the remote moved?) — not rebasing a shared checkout: a pull --rebase here replays peers' unlanded commits under their landings (MOE_PUSH_REBASE=1 opts a private checkout back in); sync it by hand or deliver from an isolated clone." -ForegroundColor Yellow
     }
     if ($pushOk) {
         Write-Host "[OK] Pushed task $TaskId to $Branch (after rebase)." -ForegroundColor Green

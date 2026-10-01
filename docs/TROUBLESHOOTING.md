@@ -418,9 +418,9 @@ git for-each-ref refs/moe/rescue/task-<id>/
   and the next session continues from there.
 - **`committed` with `pushed: false`** — `PUSH FAILED for task … committed locally only; do not review
   until pushed` (or `CHECKPOINT-UNPUSHED task=<id>`) in `#general`: the commit exists on the local
-  branch. Push by hand once the remote divergence is resolved — `pull --rebase` refuses in a tree with
-  unstaged tracked changes, which is the normal state of a busy shared checkout, so the automatic retry
-  usually fails. Visibility problem, not a loss.
+  branch. Push by hand once the remote divergence is resolved — the wrapper never `pull --rebase`s
+  the checkout it lands in (that checkout is shared with every other seat; `MOE_PUSH_REBASE=1` opts a
+  private checkout back into the one retry). Visibility problem, not a loss.
 
 **Two older causes, both fixed — check whether you still have one.**
 

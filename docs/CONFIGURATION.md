@@ -41,6 +41,7 @@ This document covers all configuration options for Moe's Tavern.
 | `MOE_DAEMON_COMMAND` | Daemon start command override (JetBrains plugin) | Auto-detected | `npx moe-daemon` |
 | `MOE_DAEMON_HOST` | Daemon connect-host override for agents + spawned MCP servers (WSL mode) | Loopback | `172.29.32.1` |
 | `MOE_DISABLE_HEARTBEAT` | Skip the heartbeat sidecar that keeps `lastActivityAt` fresh during long silent CLI steps | Unset | `1` |
+| `MOE_PUSH_REBASE` | Opt a PRIVATE checkout back into the wrapper's one `pull --rebase` + re-push retry after a rejected push (`1`). Default off: the wrapper never rebases the checkout it lands in (it is shared with every other seat); a rejected push is announced as `PUSH FAILED` / `CHECKPOINT-UNPUSHED` and left for a hand sync | | |
 | `MOE_HEARTBEAT_INTERVAL_SEC` | Heartbeat sidecar ping interval | `60` | `30` |
 | `MOE_HEARTBEAT_MAX_DURATION_SEC` | Heartbeat sidecar hard stop (a truly-hung CLI still goes stale) | `7200` | `3600` |
 | `MOE_DISABLE_QUALITY_GATE` | Skip `settings.qualityGate` for this run | Unset | `1` |
@@ -295,7 +296,7 @@ every seat replays the journals of tasks no other live session holds. The
 landing counts as landed when git shows the journaled revision on the target
 (its tip or an ancestor), or its rewritten copy: a commit after the CAS base
 that carries the landing's `Moe-Session` and `Moe-Kind: completion` trailers,
-which a `pull --rebase` in the push creates (`[receipt] a pull --rebase rewrote
+which a `pull --rebase` creates (the opt-in `MOE_PUSH_REBASE=1` push retry, or a hand sync) (`[receipt] a pull --rebase rewrote
 …`). The replay then, in order, re-sends the owed ledger row (the sha is the
 commit on the target, with no path list and `pushed` from the journaled push
 result, omitted while that is unknown; an unacknowledged row keeps the whole

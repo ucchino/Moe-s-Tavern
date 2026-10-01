@@ -632,7 +632,7 @@ const modes=['dirty-helper','pass','race-fail','race-pass','shared-mutation','tr
 'nogate-qa-claimed','gate-qa-claimed','checkpoint-reconciling','checkpoint-unpinned','manual-reconciling','manual-unpinned',
 'freed-closed','freed-generation-bump','freed-corrupt-sibling','finalizing-acked-continues','unborn','cleanup-retry','hidden-mutation',
 'receipt-replay','receipt-cached-check','receipt-same-tree-race','receipt-push','receipt-push-failed','receipt-refused','receipt-conflict',
-'receipt-ledger-replay','receipt-rebase-replay','receipt-foreign-replay',
+'receipt-ledger-replay','receipt-rebase-replay','receipt-push-rejected','receipt-foreign-replay',
 'identity-claim','reattach-sidecar','reattach-refused','reattach-postflight','reattach-preflight','reattach-none',
 ...(win?['integrity-batch']:[]),'interrupt-int',...(win?[]:['interrupt-term']),
 'teardown-finalizing','teardown-manual','teardown-no-git','teardown-sha256','teardown-no-baseline','teardown-recovered','teardown-scope','teardown-landed','teardown-nothing','teardown-running'];
@@ -751,9 +751,12 @@ if(mode==='exit-tail'){process.stdout.write('é😀'.repeat(5000)+'TAIL');proces
     // whose path does not exist. Every other arm has no remote, so no push.
     if(mode==='receipt-push'){git(root,'init','-q','--bare',mode+'-remote.git');git(repo,'remote','add','origin',path.join(root,mode+'-remote.git'));}
     if(mode==='receipt-push-failed')git(repo,'remote','add','origin',path.join(root,mode+'-missing.git'));
-    // A peer's commit is already on the remote branch: the landing's first push is
-    // rejected, and its pull --rebase rewrites the landed commit before the re-push.
-    if(mode==='receipt-rebase-replay'){const remote=path.join(root,mode+'-remote.git'),peer=path.join(root,mode+'-peer');
+    // A peer's commit is already on the remote branch, so the landing's first push
+    // is rejected. receipt-rebase-replay opts into the pull --rebase retry
+    // (MOE_PUSH_REBASE=1), which rewrites the landed commit before the re-push;
+    // receipt-push-rejected keeps the default, which announces the rejection and
+    // leaves the checkout exactly as it was.
+    if(mode==='receipt-rebase-replay'||mode==='receipt-push-rejected'){const remote=path.join(root,mode+'-remote.git'),peer=path.join(root,mode+'-peer');
       git(root,'init','-q','--bare',mode+'-remote.git');git(repo,'remote','add','origin',remote);git(repo,'push','-q','origin','moe/frozen');
       git(root,'clone','-q','-b','moe/frozen',remote,peer);
       for(const [key,value] of [['user.name','Moe Peer'],['user.email','peer@test.local'],['core.autocrlf','false']])git(peer,'config',key,value);
@@ -823,6 +826,8 @@ if(/^teardown-(finalizing|manual|no-git|sha256|no-baseline|recovered|running)$/.
   // A peer lands an EMPTY commit before the CAS: new base, identical rebuilt tree.
   if(mode==='receipt-same-tree-race'){write(race,"require('child_process').execFileSync('git',['commit','--allow-empty','-qm','peer-empty']);");
     env.MOE_POSTFLIGHT_TEST_HOOK_PRE_UPDATE_REF='node "'+race.replaceAll('\\','/')+'"';}
+  // The pull --rebase retry is opt-in; only receipt-rebase-replay exercises it.
+  if(mode==='receipt-rebase-replay')env.MOE_PUSH_REBASE='1';
   const args=win?['-NoProfile','-File',wrapper,'-Project',nested,'-WorkerId','worker-frozen','-Role','worker',
     '-Team','Smoke','-NoStartDaemon','-Command',cli,'-NoLoop','-PollInterval','0']:
     [wrapper,'--project',nested,'--worker-id','worker-frozen','--role','worker','--team','Smoke','--no-start-daemon',
@@ -1279,6 +1284,19 @@ exit "$rc"
     assert.equal(generalChat.some(m=>m.startsWith('PUSH FAILED')),false,log);
   }
   if(mode==='receipt-push-failed')assert.ok(generalChat.some(m=>m.startsWith('PUSH FAILED for task task-postflight')),log);
+  if(mode==='receipt-push-rejected'){
+    // The remote moved under the landing: the push is rejected and announced, and
+    // the shared checkout is left exactly as it was -- no pull --rebase, no
+    // rewritten commit, no peer bytes pulled in, no rebase state left behind.
+    const peerTip=git(path.join(root,mode+'-remote.git'),'rev-parse','refs/heads/moe/frozen');
+    assert.ok(log.includes('not rebasing a shared checkout'),'a rejected push is announced, not repaired\n'+log);
+    assert.equal(log.includes('trying git pull --rebase'),false,log);
+    assert.equal(fs.existsSync(path.join(repo,'.git','rebase-merge'))||fs.existsSync(path.join(repo,'.git','rebase-apply')),false,'no rebase state is left behind\n'+log);
+    assert.notEqual(peerTip,after,log);
+    assert.notEqual(cp.spawnSync('git',['-C',repo,'cat-file','-e',peerTip+'^{commit}']).status,0,'the peer commit is never even fetched\n'+log);
+    assert.equal(git(repo,'rev-parse','HEAD'),after,log);
+    assert.ok(generalChat.some(m=>m.startsWith('PUSH FAILED for task task-postflight')),log);
+  }
   if(mode==='cleanup-retry'){
     assert.equal(checks.length,1,log);assert.equal(checks[0].args.exitCode,0);assert.equal(pushBlocked,false,log);
     assert.ok(log.split('Cannot remove owned qualityGate workspace').length>2,'a failed cleanup is reported and retried\n'+log);
@@ -1310,6 +1328,7 @@ exit "$rc"
     assert.deepEqual([r.candidateId,r.target,r.targetBefore,r.targetAfter,r.landedRevision],
       [c.id,c.deliveryTarget,mode==='unborn'?ZERO_OID:c.baseRevision,after,after],log);
     if(mode==='receipt-push-failed'){assert.match(String(r.pushResult),/^push failed: fatal: .+$/,log);assert.ok(r.pushResult.length<=500,log);}
+    else if(mode==='receipt-push-rejected'){assert.match(String(r.pushResult),/^push failed: error: failed to push some refs to /,log);assert.ok(r.pushResult.length<=500,log);}
     else assert.equal(r.pushResult,mode==='receipt-push'?'pushed moe/frozen':undefined,log);
     if(!mode.startsWith('receipt-push'))assert.ok(log.includes('no git remote configured; push skipped'),'no remote, no push attempt\n'+log);
     assert.ok(ledgerAt>=0&&ledgerAt<rpc.indexOf(receipts[0]),'the receipt follows the ledger row\n'+log);

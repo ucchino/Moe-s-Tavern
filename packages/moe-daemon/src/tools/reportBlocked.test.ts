@@ -553,6 +553,74 @@ describe('moe.report_blocked', () => {
   });
 
   // ---- repeat report_blocked on an already-BLOCKED task ----
+  it.each([false, true])('assignee repeat frees a third-party non-resource hold (corrected=%s)', async (corrected) => {
+    const dependency = await state.createTask({ epicId: 'epic-1', title: 'Dependency', status: 'WORKING' });
+    await state.updateTask('task-1', { status: 'REVIEW', assignedWorkerId: 'worker-1' });
+    await state.updateWorker('worker-1', { status: 'CODING', currentTaskId: 'task-1' });
+    await state.acquireResource({ resourceId: 'host-guard', taskId: 'task-1', workerId: 'worker-1' });
+    const leaseBefore = structuredClone(state.getResource('host-guard'));
+    await report({ workerId: undefined, reason: 'owner decision pending', blockedOnTaskIds: [dependency.id] });
+    const blockedAt = state.getTask('task-1')!.blockedAt;
+    const generalBefore = generalPosts.length;
+    const roleBefore = rolePosts.length;
+    const reason = corrected ? 'owner clarified; waiting for cleanup' : 'owner decision pending';
+
+    const result = await report({ reason });
+
+    const expected = {
+      status: 'BLOCKED', assignedWorkerId: null, blockedFromStatus: 'REVIEW', blockedAt,
+      blockedReason: reason, blockedOnTaskIds: [dependency.id], blockedResourceId: null,
+    };
+    expect(state.getTask('task-1')).toMatchObject(expected);
+    expect(JSON.parse(fs.readFileSync(path.join(moePath, 'tasks/task-1.json'), 'utf8'))).toMatchObject(expected);
+    expect(state.getWorker('worker-1')).toMatchObject({ status: 'IDLE', currentTaskId: null });
+    expect(state.getResource('host-guard')).toEqual(leaseBefore);
+    expect(result).toMatchObject({ alreadyBlocked: true, reasonUpdated: corrected, seatFreed: true, workerStatus: 'IDLE' });
+    expect(result.nextAction).toBeUndefined();
+    expect(result.sessionHandoff).toMatchObject({ action: 'END_SESSION', taskId: 'task-1', workerId: 'worker-1' });
+    expect(result.message).toContain('seat freed');
+    expect(result.message).not.toContain('nothing was written');
+    if (!corrected) {
+      expect(generalPosts).toHaveLength(generalBefore);
+      expect(rolePosts).toHaveLength(roleBefore);
+    }
+  });
+
+  it.each([false, true])('repeat without resourceId preserves an existing resource hold (corrected=%s)', async (corrected) => {
+    await state.updateWorker('worker-1', { currentTaskId: 'task-1' });
+    await state.acquireResource({ resourceId: 'bench', taskId: 'task-other', workerId: 'worker-other' });
+    await report({ reason: 'waiting for bench', resourceId: 'bench' });
+    const resourceBefore = structuredClone(state.getResource('bench'));
+    const result = await report({ reason: corrected ? 'still waiting for bench' : 'waiting for bench' });
+    expect(state.getTask('task-1')).toMatchObject({ status: 'BLOCKED', assignedWorkerId: 'worker-1', blockedResourceId: 'bench' });
+    expect(state.getWorker('worker-1')).toMatchObject({ status: 'BLOCKED', currentTaskId: 'task-1' });
+    expect(state.getResource('bench')).toEqual(resourceBefore);
+    expect(result.seatFreed).not.toBe(true);
+    expect(result.sessionHandoff).toBeUndefined();
+  });
+
+  it.each([false, true])('third-party repeat keeps its non-resource hold (corrected=%s)', async (corrected) => {
+    await state.updateWorker('worker-1', { currentTaskId: 'task-1' });
+    await report({ workerId: undefined, reason: 'human decision' });
+    const result = await report({ workerId: undefined, reason: corrected ? 'human cleanup decision' : 'human decision' });
+    expect(state.getTask('task-1')).toMatchObject({ status: 'BLOCKED', assignedWorkerId: 'worker-1' });
+    expect(state.getWorker('worker-1')).toMatchObject({ status: 'BLOCKED', currentTaskId: 'task-1' });
+    expect(result.seatFreed).not.toBe(true);
+    expect(result.sessionHandoff).toBeUndefined();
+  });
+
+  it('assignee repeat clears only the dangling assignment, not another active session', async () => {
+    await report({ workerId: undefined, reason: 'human decision' });
+    const other = await state.createTask({ epicId: 'epic-1', title: 'Other', status: 'WORKING', assignedWorkerId: 'worker-1' });
+    await state.updateWorker('worker-1', { status: 'CODING', currentTaskId: other.id });
+    const result = await report({ reason: 'human decision' });
+    expect(state.getTask('task-1')!.assignedWorkerId).toBeNull();
+    expect(state.getWorker('worker-1')).toMatchObject({ status: 'CODING', currentTaskId: other.id });
+    expect(result.seatFreed).toBe(true);
+    expect(result.nextAction).toBeUndefined();
+    expect(result.sessionHandoff).toBeUndefined();
+  });
+
   // A correction used to return success:true while storing nothing, so the next
   // claimer was served the STALE recipe. These arms pin the store, not the
   // response: an assertion that only reads the returned object cannot tell an

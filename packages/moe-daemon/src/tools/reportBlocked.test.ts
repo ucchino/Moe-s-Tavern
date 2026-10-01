@@ -131,6 +131,42 @@ describe('moe.report_blocked', () => {
     expect(state.getWorker('worker-1')).toMatchObject({ status: 'IDLE', currentTaskId: null });
   });
 
+  it('refuses to park a human-gated row and writes, flips and pages nothing', async () => {
+    await addWorker('governor-1', null, 1);
+    await state.updateWorker('governor-1', { status: 'GOVERNING' });
+    for (const status of ['BACKLOG', 'AWAITING_APPROVAL', 'DONE', 'ARCHIVED'] as const) {
+      const gated = await state.createTask({ epicId: 'epic-1', title: `Gated ${status}`, status });
+      await expect(
+        report({ taskId: gated.id, workerId: 'governor-1', reason: 'OWNER HUMAN HOLD: keep this parked' })
+      ).rejects.toMatchObject({ code: -32002, message: expect.stringContaining(`is in ${status} state`) });
+      // The observed defect answered {taskStatus:"BACKLOG", reasonUpdated:false,
+      // workerStatus:"BLOCKED", notified:{target:"@governors"}} for exactly this
+      // call: nothing written, yet a seat "marked blocked" and governors paged.
+      expect(state.getTask(gated.id)).toMatchObject({ status, assignedWorkerId: null });
+      expect(state.getTask(gated.id)?.blockedReason ?? null).toBeNull();
+    }
+    expect(state.getWorker('governor-1')?.status).toBe('GOVERNING');
+    expect(generalPosts).toEqual([]);
+    expect(rolePosts).toEqual([]);
+  });
+
+  it('reports the caller seat status honestly when a non-assignee updates an unassigned BLOCKED row', async () => {
+    // The assignee parks the row first: seat freed, row BLOCKED and unassigned.
+    await report();
+    expect(state.getTask('task-1')).toMatchObject({ status: 'BLOCKED', assignedWorkerId: null });
+    generalPosts.length = 0;
+    rolePosts.length = 0;
+
+    await addWorker('governor-1', null, 1);
+    await state.updateWorker('governor-1', { status: 'GOVERNING' });
+    const result = await report({ workerId: 'governor-1', reason: 'corrected: waits on the owner, not the proxy' });
+
+    expect(result).toMatchObject({ alreadyBlocked: true, reasonUpdated: true, workerStatus: 'GOVERNING' });
+    expect(result.message).not.toContain('Worker marked as blocked');
+    expect(state.getTask('task-1')?.blockedReason).toBe('corrected: waits on the owner, not the proxy');
+    expect(state.getWorker('governor-1')).toMatchObject({ status: 'GOVERNING', currentTaskId: null });
+  });
+
   it('preserves dependency-resolution guidance without an executable next-task hint', async () => {
     const prerequisite = await state.createTask({ epicId: 'epic-1', title: 'Producer', status: 'WORKING' });
     const result = await report({ blockedOnTaskIds: [prerequisite.id] });

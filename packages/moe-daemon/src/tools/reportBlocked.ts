@@ -1,6 +1,6 @@
 import type { ToolDefinition } from './index.js';
 import type { StateManager } from '../state/StateManager.js';
-import { notFound, missingRequired, invalidInput } from '../util/errors.js';
+import { notFound, missingRequired, invalidInput, invalidState } from '../util/errors.js';
 import { AGENT_CLAIMABLE_STATUSES } from '../util/claimableStatuses.js';
 import { recommendSkillFor } from '../util/recommendSkill.js';
 import { assertWorkerOwns } from '../util/enforcement.js';
@@ -34,7 +34,7 @@ const BLOCKABLE_STATUSES = new Set(['PLANNING', 'WORKING', 'REVIEW']);
 export function reportBlockedTool(_state: StateManager): ToolDefinition {
   return {
     name: 'moe.report_blocked',
-    description: 'Report a task as blocked. Flips the task to BLOCKED (wrapper stops relaunching sessions against the wall) and pages an architect. Non-resource blocks reported by the ASSIGNEE (or on an unassigned task) FREE YOUR SEAT: the task parks unassigned and you go IDLE. End the current session so its wrapper can checkpoint this task; claim other work only after a fresh wrapper preflight, never inside the same CLI (a third-party/workerId-less block on an assigned task keeps the hold). Declare the tasks you wait on via blockedOnTaskIds (ids in the reason text are auto-parsed too) — the daemon auto-unblocks the task when they are all DONE/ARCHIVED (under a strict settings.deliveryPolicy a DONE task counts only once its required check is recorded). If EVERY task you name already counts that way the task is NOT blocked (dependenciesSatisfied:true — there is nothing to wait on; continue); an id that would close a dependency cycle is dropped with a warning. With resourceId: first tries to acquire the shared resource — if free you get the lease and the task is NOT blocked; if busy the task parks (seat KEPT — the grant returns it to you) and is auto-unblocked when the lease is granted. A repeat call on an already-BLOCKED task OVERWRITES blockedReason and unions new blockedOnTaskIds (keeping the original blockedFromStatus/blockedAt) and answers alreadyBlocked:true with reasonUpdated:true; a byte-identical repeat pages nobody and answers reasonUpdated:false. An assignee repeat also frees a still-assigned non-resource hold (even with an identical reason), preserving block provenance and task-keyed leases; otherwise an identical repeat writes nothing.',
+    description: 'Report a task as blocked. Flips the task to BLOCKED (wrapper stops relaunching sessions against the wall) and pages an architect. Non-resource blocks reported by the ASSIGNEE (or on an unassigned task) FREE YOUR SEAT: the task parks unassigned and you go IDLE. End the current session so its wrapper can checkpoint this task; claim other work only after a fresh wrapper preflight, never inside the same CLI (a third-party/workerId-less block on an assigned task keeps the hold). Declare the tasks you wait on via blockedOnTaskIds (ids in the reason text are auto-parsed too) — the daemon auto-unblocks the task when they are all DONE/ARCHIVED (under a strict settings.deliveryPolicy a DONE task counts only once its required check is recorded). If EVERY task you name already counts that way the task is NOT blocked (dependenciesSatisfied:true — there is nothing to wait on; continue); an id that would close a dependency cycle is dropped with a warning. With resourceId: first tries to acquire the shared resource — if free you get the lease and the task is NOT blocked; if busy the task parks (seat KEPT — the grant returns it to you) and is auto-unblocked when the lease is granted. A repeat call on an already-BLOCKED task OVERWRITES blockedReason and unions new blockedOnTaskIds (keeping the original blockedFromStatus/blockedAt) and answers alreadyBlocked:true with reasonUpdated:true; a byte-identical repeat pages nobody and answers reasonUpdated:false. An assignee repeat also frees a still-assigned non-resource hold (even with an identical reason), preserving block provenance and task-keyed leases; otherwise an identical repeat writes nothing. Only PLANNING/WORKING/REVIEW rows can be parked and only a BLOCKED row updated: a human-gated row (BACKLOG, AWAITING_APPROVAL, DONE, ARCHIVED) is refused with INVALID_STATE before any write or page — record a hold there with moe.add_comment or a task rail, or move the row with moe.set_task_status first.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -89,6 +89,27 @@ export function reportBlockedTool(_state: StateManager): ToolDefinition {
       // Only the assigned worker may report this task as blocked. The "no
       // assigned worker" case is permitted (e.g. plugin/human flow).
       assertWorkerOwns(task, params.workerId, 'moe.report_blocked');
+
+      // Only an agent-claimable row can be parked, and only an already-BLOCKED
+      // row can have its block updated. A human-gated row (BACKLOG,
+      // AWAITING_APPROVAL, DONE, ARCHIVED) has nothing to park: no wrapper is
+      // relaunching against it and no claim can reach it. This path used to
+      // fall straight through — writing nothing, flipping nothing — and still
+      // answer {taskStatus:"BACKLOG", reasonUpdated:false, workerStatus:
+      // "BLOCKED", message:"Worker marked as blocked…"} while paging
+      // @governors with a 🚧 banner for a block that never happened (observed
+      // when a governor tried to park a BACKLOG follow-up on a human hold).
+      // Refuse before the resource arm too: a queued lease on such a row would
+      // hand a grant to a status the grant path cannot restore.
+      if (task.status !== 'BLOCKED' && !BLOCKABLE_STATUSES.has(task.status)) {
+        throw invalidState(
+          `Task ${task.id}`,
+          task.status,
+          `${[...BLOCKABLE_STATUSES].join('/')} to park it, or BLOCKED to update its block. ` +
+            'A human-gated row is never parked by moe.report_blocked: record the hold with moe.add_comment ' +
+            'or a task rail, or move the row with moe.set_task_status first. Nothing was written and nobody was paged'
+        );
+      }
 
       // Resource path: try the lease FIRST. On a task that is NOT yet blocked a
       // free resource means there is no block at all — return the lease and keep
@@ -332,6 +353,11 @@ export function reportBlockedTool(_state: StateManager): ToolDefinition {
       // parking it BLOCKED against its own task. Resource flip / legacy holds:
       // the parked worker is marked BLOCKED as before. An identical repeat
       // without a seat hand-back writes nothing; neither case re-pages.
+      // workerMarkedBlocked records what was WRITTEN to a seat, so the response
+      // can only say "Worker marked as blocked" / workerStatus:"BLOCKED" about
+      // a seat this call actually flipped — never as a literal on a path that
+      // touched no worker (an unassigned row, or a third-party caller).
+      let workerMarkedBlocked = false;
       if (freeSeat && prevAssignee) {
         // Guarded like the updateTask cascade: only null the pointer (and flip
         // IDLE) when it actually references THIS task — or is already null
@@ -345,6 +371,7 @@ export function reportBlockedTool(_state: StateManager): ToolDefinition {
         }
       } else if (task.assignedWorkerId && !identicalRepeat) {
         await state.updateWorker(task.assignedWorkerId, { status: 'BLOCKED', lastError: params.reason }, 'WORKER_BLOCKED');
+        workerMarkedBlocked = true;
       }
 
       // Cross-post blocked message to task channel, general, and #governors
@@ -508,11 +535,18 @@ export function reportBlockedTool(_state: StateManager): ToolDefinition {
         ...(droppedCycleBlockedOnIds.length > 0 ? { droppedCycleBlockedOnTaskIds: droppedCycleBlockedOnIds } : {}),
         ...(warnings.length > 0 ? { warnings } : {}),
         ...(flipped || freeSeat ? { seatFreed: freeSeat } : {}),
+        // Always the seat's REAL status after the writes above: the parked
+        // assignee's, else the caller's own (a governor or plugin updating an
+        // unassigned block keeps its own status), else IDLE when no seat is
+        // involved at all. The old literal 'BLOCKED' on the no-assignee arms
+        // was the phantom-block report this tool is no longer allowed to make.
         workerStatus: freeSeat
           ? (prevAssignee ? state.getWorker(prevAssignee)?.status ?? 'IDLE' : 'IDLE')
-          : identicalRepeat && task.assignedWorkerId
-            ? state.getWorker(task.assignedWorkerId)?.status ?? 'BLOCKED'
-            : 'BLOCKED',
+          : task.assignedWorkerId
+            ? state.getWorker(task.assignedWorkerId)?.status ?? (workerMarkedBlocked ? 'BLOCKED' : 'IDLE')
+            : params.workerId
+              ? state.getWorker(params.workerId)?.status ?? 'IDLE'
+              : 'IDLE',
         // Who was actually paged — assertable, and readable by a human eyeing
         // the tool output instead of the chat channels.
         notified: identicalRepeat
@@ -532,9 +566,13 @@ export function reportBlockedTool(_state: StateManager): ToolDefinition {
               ? (architect
                   ? `Task blocked; seat freed — this response does not start another task session. Pinged ${architect.id} (freshest live architect).`
                   : 'Task blocked; seat freed — this response does not start another task session. No live architect — escalated to @governors.')
-              : architect
-                ? `Worker marked as blocked. Pinged ${architect.id} (freshest live architect).`
-                : 'Worker marked as blocked. No live architect — escalated to @governors.',
+              : workerMarkedBlocked
+                ? (architect
+                    ? `Worker marked as blocked. Pinged ${architect.id} (freshest live architect).`
+                    : 'Worker marked as blocked. No live architect — escalated to @governors.')
+                : (architect
+                    ? `Task blocked; no seat was changed. Pinged ${architect.id} (freshest live architect).`
+                    : 'Task blocked; no seat was changed. No live architect — escalated to @governors.'),
         ...(sessionHandoff ? { sessionHandoff } : {}),
         ...(blockResolution ? { blockResolution } : {}),
         ...(nextAction ? { nextAction } : {})

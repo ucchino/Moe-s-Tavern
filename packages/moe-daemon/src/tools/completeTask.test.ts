@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { StateManager } from '../state/StateManager.js';
-import { completeTaskTool } from './completeTask.js';
+import { completeTaskTool, resetBranchPolicyGovernorRateLimit } from './completeTask.js';
 import { MoeError, MoeErrorCode } from '../util/errors.js';
 import { listAttempts, openAttempt } from '../state/attemptStore.js';
 import type { ExecutionAttempt, Task, Epic, Project, ProjectSettings } from '../types/schema.js';
@@ -200,6 +200,9 @@ describe('moe.complete_task ownership + ordering enforcement', () => {
     const PATTERN = 'moe/work-*';
     const VERIFICATION = { command: 'npx vitest run', exitCode: 0, outputTail: 'ok' };
 
+    // The missing-branch #governors line is rate-limited per process.
+    beforeEach(() => resetBranchPolicyGovernorRateLimit());
+
     interface CompleteResult {
       status: string;
       branchPolicy?: { pattern: string; currentBranch?: string; matched: boolean | null; warning?: string };
@@ -278,6 +281,29 @@ describe('moe.complete_task ownership + ordering enforcement', () => {
       expect(result.status).toBe('REVIEW');
       expect(result.branchPolicy?.matched).toBeNull();
       expect(governorsPost).toHaveBeenCalledTimes(1);
+    });
+
+    it('posts the missing-branch warning to #governors once per window', async () => {
+      const { tool, governorsPost } = await boot();
+      const second = { ...writeTask(), id: 'task-2' };
+      fs.writeFileSync(path.join(moePath, 'tasks', 'task-2.json'), JSON.stringify(second, null, 2));
+      await state.load();
+
+      const first = await tool.handler(
+        { taskId: 'task-1', workerId: 'worker-a', verification: VERIFICATION },
+        state
+      ) as CompleteResult;
+      const next = await tool.handler(
+        { taskId: 'task-2', workerId: 'worker-a', verification: VERIFICATION },
+        state
+      ) as CompleteResult;
+
+      // Both results warn; the channel heard it once.
+      expect(first.branchPolicy?.warning).toContain('not enforced');
+      expect(next.branchPolicy?.warning).toContain('not enforced');
+      expect(state.getTask('task-2')?.status).toBe('REVIEW');
+      expect(governorsPost).toHaveBeenCalledTimes(1);
+      expect(governorsPost.mock.calls[0][1]).toContain('after 24 h');
     });
 
     it('leaves unconfigured projects completely untouched', async () => {

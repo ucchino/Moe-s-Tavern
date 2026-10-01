@@ -6,6 +6,23 @@ import { describeBranchPolicyFailure, matchesBranchPattern } from '../util/branc
 import { currentAttempt, setAttemptPhase } from '../state/attemptStore.js';
 import type { ExecutionAttempt } from '../types/schema.js';
 
+/**
+ * #governors hears about completions that report no `currentBranch` at most
+ * once per window; every such completion still carries the warning in its own
+ * result. Paging the channel on every completion was pure noise: most agents
+ * do not send the field, and a governor can do nothing about one more line.
+ */
+const BRANCH_WARNING_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+// In-memory (resets on daemon restart, which is the conservative direction:
+// a restart re-warns once rather than staying silent for up to a day).
+let branchWarningAt: number | undefined;
+
+/** Test seam: clear the #governors missing-branch warning window. */
+export function resetBranchPolicyGovernorRateLimit(): void {
+  branchWarningAt = undefined;
+}
+
 interface BranchPolicyOutcome {
   pattern: string;
   currentBranch?: string;
@@ -19,7 +36,9 @@ interface BranchPolicyOutcome {
  * Returns null when no policy is configured (unconfigured projects are wholly
  * unaffected), throws on a real mismatch, and only WARNS when the caller
  * reported no branch — the agent wrappers do not send `currentBranch` yet, so
- * blocking on its absence would break every completion on rollout.
+ * blocking on its absence would break every completion on rollout. The
+ * warning rides every result; #governors sees one line per
+ * BRANCH_WARNING_WINDOW_MS, not one per completion.
  */
 async function checkBranchPolicy(
   state: StateManager,
@@ -36,12 +55,17 @@ async function checkBranchPolicy(
   const branch = typeof currentBranch === 'string' ? currentBranch.trim() : '';
   if (!branch) {
     const warning = 'currentBranch not reported — branch policy not enforced for this completion';
-    try {
-      await state.postToRoleChannel(
-        'governors',
-        `⚠️ Branch policy not enforced on ${taskId}: no currentBranch reported (expected "${pattern}").`
-      );
-    } catch { /* never block a completion on a chat post */ }
+    const nowMs = Date.now();
+    if (branchWarningAt === undefined || nowMs - branchWarningAt >= BRANCH_WARNING_WINDOW_MS) {
+      branchWarningAt = nowMs;
+      try {
+        await state.postToRoleChannel(
+          'governors',
+          `⚠️ Branch policy not enforced on ${taskId}: no currentBranch reported (expected "${pattern}"). ` +
+            'Every completion without a branch carries this warning in its result; this channel hears it again after 24 h.'
+        );
+      } catch { /* never block a completion on a chat post */ }
+    }
     return { pattern, matched: null, warning };
   }
 

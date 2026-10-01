@@ -168,7 +168,8 @@ interface ProjectSettings {
   // a literal branch name or a `*` glob (e.g. "moe/work-*", what the agent
   // wrappers peel onto). Case-sensitive, anchored at both ends. Empty/unset
   // disables the check; a completion that reports no currentBranch is never
-  // blocked, only warned to #governors. A literal value (no `*`) also doubles
+  // blocked: its result carries a warning and #governors hears about it at
+  // most once per 24 h. A literal value (no `*`) also doubles
   // as the wrapper's peel target instead of moe/work-<date>.
   consolidationBranch?: string;
 

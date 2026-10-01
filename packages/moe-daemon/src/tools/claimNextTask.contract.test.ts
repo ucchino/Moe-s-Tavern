@@ -88,6 +88,12 @@ describe('moe.claim_next_task', () => {
     expect(result.epic).toBeUndefined();
     expect(result.allRails).toBeUndefined();
     expect(result.memory).toBeUndefined();
+    // The hint is the role-default read: "full" in its wording makes agents pass
+    // view:"full" and skip the role trim.
+    const next = result.nextAction as { tool: string; args: Record<string, unknown>; reason: string };
+    expect(next.tool).toBe('moe.get_context');
+    expect(next.args).toEqual({ taskId: 'task-2' });
+    expect(next.reason).not.toMatch(/full/i);
   });
 
   it('assigns workerId to claimed task', async () => {

@@ -63,14 +63,27 @@ describe('moe.get_context status polling', () => {
     expect(result).toMatchObject({
       contextScope: 'status', requiresFullContext: true,
       task: { id: 'task-1', status: 'REVIEW', assignedWorkerId: 'worker-status', reopenCount: 2, commitCount: 1, lastCommitOutcome },
-      nextAction: { tool: 'moe.get_context', args: { taskId: 'task-1', workerId: 'worker-status', view: 'full' } },
+      nextAction: { tool: 'moe.get_context' },
     });
+    expect(result.nextAction.args).toEqual({ taskId: 'task-1', workerId: 'worker-status' });
     expect(result.nextAction.reason).toMatch(/before.*reviewing|before.*acting/i);
     expect(result.task!.commits[0]).toMatchObject({ sha: commit(1).sha, treeId: 'a'.repeat(40), kind: 'completion', pushed: false });
     expect(result).not.toHaveProperty('project');
     expect(result).not.toHaveProperty('allRails');
     expect(result.task).not.toHaveProperty('implementationPlan');
     expect(result.task!.commits[0]).not.toHaveProperty('paths');
+  });
+
+  // The hint once carried view:"full", which skips the role trim. Measured on a
+  // live fleet 2026-09-30: QA passed view:"full" on 19 of 23 context reads.
+  it('hints the role-default read, so a qa caller that follows it keeps its trim', async () => {
+    await load({ status: 'REVIEW' });
+    const poll = await status({ workerId: 'qa-1' });
+
+    expect(poll.nextAction.args).toEqual({ taskId: 'task-1', workerId: 'qa-1' });
+    expect(poll.nextAction.reason).not.toMatch(/full/i);
+    const next = await getContextTool(h.state).handler(poll.nextAction.args, h.state) as { omitted?: string[] };
+    expect(next.omitted).toEqual(['task.epicSiblings', 'planningNotes', 'routing']);
   });
 
   it('does not mutate state or satisfy the full-context prerequisite for execution', async () => {
@@ -148,7 +161,7 @@ describe('moe.get_context status polling', () => {
     vi.stubEnv('MOE_WORKER_ID', 'worker-status');
     const result = await getContextTool(h.state).handler({ view: 'status' }, h.state) as StatusContext;
     expect(result.task!.id).toBe('task-1');
-    expect(result.nextAction.args).toEqual({ taskId: 'task-1', workerId: 'worker-status', view: 'full' });
+    expect(result.nextAction.args).toEqual({ taskId: 'task-1', workerId: 'worker-status' });
     expect(h.state.getTask('task-1')!.contextFetchedBy).toBeUndefined();
   });
 
@@ -158,6 +171,7 @@ describe('moe.get_context status polling', () => {
     const result = await status();
     expect(result).toMatchObject({ contextScope: 'status', requiresFullContext: true, task: null });
     expect(result).not.toHaveProperty('currentCandidate');
-    expect(result.nextAction).toMatchObject({ tool: 'moe.get_context', args: { view: 'full' } });
+    expect(result.nextAction.tool).toBe('moe.get_context');
+    expect(result.nextAction.args).toEqual({});
   });
 });

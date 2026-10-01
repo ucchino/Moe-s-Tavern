@@ -1,8 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import { ToolTestHarness } from './toolTestHarness.js';
 import { getContextTool } from './getContext.js';
+import { getTools } from './index.js';
 import type { Task, TaskCommit, TaskVerification } from '../types/schema.js';
 
 describe('moe.get_context', () => {
@@ -670,7 +672,31 @@ describe('moe.get_context role trim', () => {
     expect(r.task.epicSiblings).toBeUndefined();
     expect(r).not.toHaveProperty('planningNotes');
     expect(r.omitted).toEqual(['task.epicSiblings', 'planningNotes', 'routing']);
+    // Names the escape hatch without inviting it: the trimmed read is the complete one for the role.
     expect(r.omittedHint).toContain('view:"full"');
+    expect(r.omittedHint).toContain('only if you need');
+  });
+
+  // qa.md said "Audit task.commits from full get_context", written when `full`
+  // was the default view. Agents took it literally once view:"full" came to
+  // mean untrimmed: measured on a live fleet 2026-09-30, QA passed it on 19 of
+  // 23 context reads. view:"full" itself stays a legal phrase (the escape hatch).
+  it('no role doc or tool description says "full context" for the normal read', () => {
+    const FULL_READ = /full[- ](?:task )?context|full `?get_context/i;
+    // src/tools -> src -> moe-daemon -> packages -> repo root
+    const rolesDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..', 'docs', 'roles');
+    const docs = fs.readdirSync(rolesDir).filter((file) => file.endsWith('.md'));
+    // A scan that finds no docs would pass vacuously.
+    expect(docs).toEqual(expect.arrayContaining(['qa.md', 'worker.md', 'architect.md', 'governor.md']));
+
+    const docHits = docs.flatMap((file) =>
+      fs.readFileSync(path.join(rolesDir, file), 'utf-8').split(/\r?\n/)
+        .flatMap((line, i) => (FULL_READ.test(line) ? [`${file}:${i + 1}`] : [])));
+    const toolHits = getTools(h.state)
+      .filter((tool) => FULL_READ.test(tool.description) || FULL_READ.test(JSON.stringify(tool.inputSchema)))
+      .map((tool) => tool.name);
+
+    expect([...docHits, ...toolHits]).toEqual([]);
   });
 
   it('view:"full" returns the untrimmed payload for a qa caller', async () => {

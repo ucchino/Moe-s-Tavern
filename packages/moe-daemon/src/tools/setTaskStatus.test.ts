@@ -25,6 +25,17 @@ describe('moe.set_task_status', () => {
     expect(result.status).toBe('PLANNING');
   });
 
+  it('points an agent-claimable status at the role-default context read', async () => {
+    const result = await setTaskStatusTool(h.state).handler({ taskId: 'task-1', status: 'PLANNING' }, h.state) as {
+      nextAction: { tool: string; args: Record<string, unknown>; reason: string };
+    };
+
+    expect(result.nextAction.tool).toBe('moe.get_context');
+    expect(result.nextAction.args).toEqual({ taskId: 'task-1' });
+    // "full" in the wording makes agents pass view:"full" and skip the role trim.
+    expect(result.nextAction.reason).not.toMatch(/full/i);
+  });
+
   it('validates status transitions', async () => {
     const tool = setTaskStatusTool(h.state);
     // BACKLOG -> DONE is not valid

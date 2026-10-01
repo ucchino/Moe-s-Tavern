@@ -281,7 +281,7 @@ export function setTaskStatusTool(_state: StateManager): ToolDefinition {
         nextAction = {
           tool: 'moe.get_context',
           args: { taskId: updated.id },
-          reason: `Task moved to ${updated.status}. Fetch full context before acting.`,
+          reason: `Task moved to ${updated.status}. Read the task context before acting.`,
         };
       }
 

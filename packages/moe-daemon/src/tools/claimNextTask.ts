@@ -775,7 +775,7 @@ export function claimNextTaskTool(_state: StateManager): ToolDefinition {
           : {
               tool: 'moe.get_context',
               args: { taskId: task.id },
-              reason: 'Always fetch full task context (rails, DoD, memory) before acting.',
+              reason: 'Always read the task context (rails, DoD, memory) before acting.',
               // get_context will recommend the role-appropriate skill once it sees task.status,
               // so we don't pre-recommend here unless the task is reopened — the reopen
               // signal is exactly the situation receiving-code-review covers.

@@ -28,7 +28,7 @@ function taskStatus(task: Task) {
   };
 }
 
-/** Never marks full context fetched or returns an action that assumes it was. */
+/** Never marks the context as read or returns an action that assumes it was. */
 export function contextStatus(state: StateManager, task: Task | null | undefined, workerId: string) {
   const candidates = task ? listCandidatesForTask(state, task.id) : [];
   const currentCandidate = candidates[candidates.length - 1];
@@ -39,12 +39,13 @@ export function contextStatus(state: StateManager, task: Task | null | undefined
     ...(currentCandidate ? { currentCandidate } : {}),
     nextAction: {
       tool: 'moe.get_context',
+      // No `view`: the caller's role-default read. Naming view:"full" here sent
+      // every caller that followed the hint to the untrimmed payload.
       args: {
         ...(task ? { taskId: task.id } : {}),
         ...(workerId ? { workerId } : {}),
-        view: 'full',
       },
-      reason: 'Status polling omits rails, DoD, plan, amendments and verification. Bounded status polling may continue while waiting; fetch full context when the wait ends or status/ownership changes, before reviewing or acting beyond polling. Commit and candidate identities alone do not prove delivery or approval.',
+      reason: 'Status polling omits rails, DoD, plan, amendments and verification. Bounded status polling may continue while waiting; read the context again without `view` when the wait ends or status/ownership changes, before reviewing or acting beyond polling. Commit and candidate identities alone do not prove delivery or approval.',
     },
   };
 }

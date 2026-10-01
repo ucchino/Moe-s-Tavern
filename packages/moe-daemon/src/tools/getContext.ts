@@ -73,7 +73,7 @@ import {
 export function getContextTool(_state: StateManager): ToolDefinition {
   return {
     name: 'moe.get_context',
-    description: 'Read the working context for one task: project settings and global/epic/task rails, the epic, the task (plan and steps, definitionOfDone, recent comments, verification, commits), its assigned worker, recent chat, planningNotes and a nextAction hint. Read-only. Fetch it after claiming and before planning, implementing or reviewing. Includes `routing` (the model catalog, efforts and tier defaults the architect picks from at submit_plan). Trimmed per role by default (a QA caller does not get task.epicSiblings, planningNotes or routing; a worker does not get routing; the response lists what was left out in `omitted`); pass view:"full" for everything, from any role. view:"status" is a lighter delivery poll that does not count as having read the context.',
+    description: 'Read the working context for one task: project settings and global/epic/task rails, the epic, the task (plan and steps, definitionOfDone, recent comments, verification, commits), its assigned worker, recent chat, planningNotes and a nextAction hint. Read-only. Fetch it after claiming and before planning, implementing or reviewing. Includes `routing` (the model catalog, efforts and tier defaults the architect picks from at submit_plan). Trimmed per role by default (a QA caller does not get task.epicSiblings, planningNotes or routing; a worker does not get routing; the response lists what was left out in `omitted`). That default is the complete read for the role: pass view:"full" only if you need a left-out section (any role may). view:"status" is a lighter delivery poll that does not count as having read the context.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -81,7 +81,7 @@ export function getContextTool(_state: StateManager): ToolDefinition {
         workerId: { type: 'string', description: 'Caller worker ID (auto-injected by proxy)' },
         view: {
           type: 'string', enum: ['full', 'status'],
-          description: 'Omit for the role-trimmed default (counts as having read the context). "full" returns the complete, untrimmed payload for any role. "status" is a read-only delivery poll, excludes instructions and never satisfies the full-context prerequisite.'
+          description: 'Omit for the normal read: the role-trimmed default, which counts as having read the context. "full" also returns the sections left out for your role; pass it only if you need one of them. "status" is a read-only delivery poll, excludes instructions and never counts as having read the context.'
         },
         commentsLimit: {
           type: 'number',
@@ -464,7 +464,7 @@ export function getContextTool(_state: StateManager): ToolDefinition {
         ...(omitted.includes('routing') ? {} : { routing: routingInfo(state.project.settings) }),
         ...(nextAction ? { nextAction } : {}),
         ...(omitted.length > 0
-          ? { omitted, omittedHint: `Trimmed for the ${callerRole} role. Call moe.get_context with view:"full" to include these sections.` }
+          ? { omitted, omittedHint: `Left out for the ${callerRole} role, whose work does not read them; this is the complete read for the role. Pass view:"full" only if you need one of these sections.` }
           : {}),
       };
     }

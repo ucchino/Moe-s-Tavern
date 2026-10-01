@@ -16,6 +16,7 @@ function between(source, start, end) {
 }
 const ps = read('ps1');
 const sh = read('sh');
+const shCurate = between(sh, '                        PREFLIGHT_CONTEXT_TRIMMED=$(', '\n                    fi\n                fi\n\n                # 6.');
 const psContext = between(ps, '    $dynamicContext = ""', '    # -------- Pre-flight baseline');
 const psBody = between(ps, '    $claimPromptBody = $null', '    $script:CliLaunchedAt = Get-Date');
 const shPrompt = between(sh, '    DYNAMIC_CONTEXT=""', '    # -------- Pre-flight landing: recovery');
@@ -39,11 +40,13 @@ PREFLIGHT_OK=${bool(o.claimed)}; PREFLIGHT_NO_TASK=${bool(o.noTask)}
 PREFLIGHT_IS_RESUME=${bool(o.resume)}; PREFLIGHT_TASK_ID=${o.claimed ? 'task-fixture' : ''}
 PREFLIGHT_CLAIM_FAILED=${bool(o.claimFailed)}
 PREFLIGHT_ROUTED_MENTIONS_COUNT=1; PREFLIGHT_ROUTED_MENTIONS_JSON='[{"content":"reply-fixture"}]'
+PYTHON_CMD=${windows ? 'python' : 'python3'}; PREFLIGHT_CONTEXT="$MOE_FIXTURE_CONTEXT"
 STATUSES='["WORKING"]'; PROJECT=/nonexistent-moe-prompt-fixture
 `;
-    script = setup + shPrompt + '\nprintf "\\036%s\\036%s" "$DYNAMIC_CONTEXT" "$PROMPT_BODY"';
+    script = setup + shCurate + '\n' + shPrompt + '\nprintf "\\036%s\\036%s" "$DYNAMIC_CONTEXT" "$PROMPT_BODY"';
   } else {
     const setup = `$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 $Role='${o.role}'; $cliType='${o.cli}'; $WorkerId='worker-fixture'
 $Interactive=$${bool(o.interactive)}; $grokInteractive=$false
 $loopEnabled=$${bool(o.loop)}; $AutoClaim=$${bool(o.auto)}
@@ -51,6 +54,7 @@ $preflightOk=$${bool(o.claimed)}; $preflightNoTask=$${bool(o.noTask)}
 $preflightIsResume=$${bool(o.resume)}; $preflightTaskId='${o.claimed ? 'task-fixture' : ''}'
 $preflightClaimFailed=$${bool(o.claimFailed)}
 $preflightRoutedMentions=@([pscustomobject]@{content='reply-fixture'})
+$preflightContext=$env:MOE_FIXTURE_CONTEXT | ConvertFrom-Json
 $statuses=@('WORKING'); $serenaProject=[IO.Path]::GetTempPath()
 `;
     script = '\ufeff' + setup + psContext + psBody + '\n[Console]::Write(([char]30).ToString() + $dynamicContext + [char]30 + $claimPromptBody)';
@@ -65,7 +69,7 @@ $statuses=@('WORKING'); $serenaProject=[IO.Path]::GetTempPath()
     const args = engine === 'bash'
       ? ['--noprofile', '--norc', file.replaceAll('\\', '/')]
       : ['-NoProfile', '-NonInteractive', '-File', file];
-    result = spawnSync(executable, args, { encoding: 'utf8', timeout: 20000, env: { ...baseEnv, ...o.env } });
+    result = spawnSync(executable, args, { encoding: 'utf8', timeout: 20000, env: { ...baseEnv, ...o.env, MOE_FIXTURE_CONTEXT: JSON.stringify(o.context || {}) } });
   } finally {
     unlinkSync(file);
     rmdirSync(dir);
@@ -78,6 +82,19 @@ $statuses=@('WORKING'); $serenaProject=[IO.Path]::GetTempPath()
 }
 
 for (const [engine, executable] of engines) {
+  for (const comments of [[], [{ id: 'comment-governor', author: 'governor-fixture', content: 'HOLD: amend host before run; preserve pin/oracle 漢字.' }]]) {
+    test(`${engine}: resumed task retains ${comments.length} recent comments and omission metadata`, () => {
+      const commentSummary = { total: 17, returned: comments.length, omitted: 17 - comments.length, truncated: 1 };
+      const context = { task: { id: 'task-fixture', comments, commentSummary } };
+      const rendered = render(engine, executable, { claimed: true, noTask: false, resume: true, context });
+      const injected = JSON.parse(between(rendered.context, '<claimed_task_context>', '</claimed_task_context>').replace('<claimed_task_context>', '').trim());
+      assert.deepEqual(injected.task.comments, comments, 'governor holds must survive preflight curation');
+      assert.deepEqual(injected.task.commentSummary, commentSummary, 'omissions must remain visible');
+      assert.doesNotMatch(rendered.body, /full context/);
+      assert.match(rendered.body, /Read the recent task comments before acting/);
+      assert.match(rendered.body, /if absent or truncated, call moe\.get_context/);
+    });
+  }
   for (const role of ['worker', 'qa']) {
     test(`${engine}: claimed ${role} verification obeys project rails`, () => {
       const { body } = render(engine, executable, { role, claimed: true, noTask: false });
@@ -197,6 +214,10 @@ for (const name of ['roles/qa.md', 'roles/qa.reference.md', 'skills/moe-qa-loop/
   });
 }
 for (const [name, src] of wrappers) {
+  test(`${name}: launcher-curated label never promises full task context`, () => {
+    assert.equal(/its full context is above|It contains your full task context/.test(src), false,
+      'a curated payload must not be advertised as full context');
+  });
   // The wait is a bounded CLAIM poll, not moe.wait_for_task: the wrappers pipe
   // one JSON line into a fresh moe-proxy and close stdin, and the proxy errors
   // every still-open request ~2s after EOF, so a blocking long-poll cannot

@@ -297,7 +297,7 @@ Submit an implementation plan. Sets task status to `AWAITING_APPROVAL`.
 - **Enforced rails:** Only `forbiddenPatterns` and global `requiredPatterns` are strictly enforced.
 - **Guidance rails:** `epicRails` and `taskRails` are provided as guidance to AI agents but are NOT enforced in plan text. This allows agents to address the intent of rails without requiring verbatim quoting. Humans verify compliance during plan approval.
 - On violation, returns JSON-RPC error with `message: "RAIL_VIOLATION"` and `error.data` set to the violation string.
-- **Step bounds:** max 100 steps, each `description` ≤10000 chars, each `affectedFiles` and `newFiles` ≤50 entries.
+- **Step bounds:** max 100 steps, each `description` ≤10000 chars, each `affectedFiles` and `newFiles` ≤50 entries. The plan sanitizer that runs on every task write and reload bounds step descriptions, step notes and amendment texts at these same caps (`util/planSize`), so an accepted step is stored byte-for-byte. (Before this was unified, it sliced at 5000 while `submit_plan` accepted 10000: approved steps between 5001 and 10000 chars were persisted cut mid-sentence at exactly 5000.)
 - **Affected-path existence gate:** every `affectedFiles` entry must exist on disk under the project root, unless some step declares it in `newFiles`. A plan citing a path that exists nowhere is rejected with `INVALID_INPUT`, `context.missingPaths`, `context.projectRoot`, and a message teaching both fixes — correct the path (they are relative to the PROJECT ROOT, so `packages/moe-daemon/src/x.ts`, not `src/x.ts`) or declare files this task creates in that step's `newFiles`. The exemption is plan-wide, so a file created in step 1 may be cited by step 2. `newFiles` still count toward the distinct-file total (deduped against `affectedFiles`) and are still scanned by the rails check, so declaring a path new cannot dodge either gate. The check runs after the rails and plan-size gates, and fails open: an unreadable project root, or any stat error other than `ENOENT`/`ENOTDIR`, is treated as "exists".
 - **Plan-size gate:** oversized plans are rejected with `CONSTRAINT_VIOLATION` — more than 12 steps or more than 10 *distinct* affected files (union across steps) — with `suggestedAction` pointing at `moe.create_task` ("split the task"). Past the softer thresholds (8 steps / 5 distinct files) the response carries a `warnings: string[]` array instead. Thresholds configurable via `project.json` `settings.taskSizing { warnSteps, maxSteps, warnDistinctFiles, maxDistinctFiles }`.
 - Plan submission refreshes `metrics.plannedStepCount`.
@@ -370,7 +370,7 @@ Mark a step as `COMPLETED`. Appends `stepId` to `task.stepsCompleted` (de-duplic
   taskId: string,
   stepId: string,
   modifiedFiles?: string[],   // EVERY project-relative path this step created or modified — omitting it draws a `warning`
-  note?: string,
+  note?: string,              // ≤10000 chars; longer is refused with INVALID_INPUT (never stored clipped)
   workerId?: string
 }
 ```
@@ -409,7 +409,7 @@ Mark a step as `COMPLETED`. Appends `stepId` to `task.stepsCompleted` (de-duplic
 {
   taskId: string,        // required
   stepId: string,        // required
-  description: string,   // required — FULL replacement instructions (non-empty, ≤5000 chars)
+  description: string,   // required — FULL replacement instructions (non-empty, ≤10000 chars — the same cap as submit_plan steps, so an amendment can restore a full-length step)
   reason: string,        // required — why; posted to the assigned worker (non-empty, ≤2000 chars)
   workerId?: string      // caller (auto-injected by proxy) — the role gate reads it
 }

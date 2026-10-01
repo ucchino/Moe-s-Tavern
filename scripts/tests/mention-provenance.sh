@@ -142,6 +142,7 @@ run_mode() {
   MOE_PROVENANCE_CHANNEL="$CHANNEL" \
   MOE_PROVENANCE_CAPTURE="$capture" \
   MOE_PROVENANCE_FAIL="$fail_kind" \
+  MOE_TASKLESS_WAIT_SEC=5 \
   timeout 60s "$WRAPPER" \
     --project "$PROJECT_DIR" \
     --worker-id "$WORKER_ID" \
@@ -185,7 +186,8 @@ status=0
 # reproducing the reported defect while the store stays correct. extractfail /
 # countfail: each of the two silent-drop paths dies in turn, and each must
 # surface its OWN reason code rather than an empty block.
-for mode in faithful substitute extractfail countfail; do
+# cross-channel: only the routed backlog carries the mentions.
+for mode in faithful substitute extractfail countfail cross-channel; do
   echo "== mode=$mode =="
   if ! run_mode "$mode"; then
     status=1
@@ -196,4 +198,4 @@ if [ "$status" -ne 0 ]; then
   echo "mention-provenance.sh FAILED"
   exit 1
 fi
-echo "mention-provenance.sh PASSED ($CASE_COUNT stored cases + 2 synthetic delivery-failure cases, 4 modes)"
+echo "mention-provenance.sh PASSED ($CASE_COUNT stored cases + 2 synthetic delivery-failure cases, 5 modes)"

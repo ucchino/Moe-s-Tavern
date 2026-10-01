@@ -5212,6 +5212,7 @@ do {
     $preflightTaskChannel = ""
     $preflightContext = $null
     $preflightGeneralUnread = $null
+    $preflightRoutedUnread = $null
     $preflightTaskUnread = $null
     $preflightPending = $null
     $preflightSkillName = $null
@@ -5309,11 +5310,18 @@ do {
         # rather than beside the mention extraction below because the
         # wrapper-side wait needs it first.
         $roleGroupTag = switch ($Role) { "architect" { "architects" } "worker" { "workers" } "qa" { "qa" } "governor" { "governors" } default { "" } }
+        # #general/current-task reads miss routed mentions in role or peer
+        # channels. Ask the daemon for its routed backlog (loop guard intact).
+        # This SHORT poll fits the proxy's 2s stdin-EOF grace; never use the
+        # normal long-poll default here. Governors own their live chat waiter.
+        if ($Role -ne 'governor') {
+            $preflightRoutedUnread = Invoke-MoeRpc -Tool "chat_wait" -Args @{ workerId = $WorkerId; channels = @(); timeoutMs = 1000 }
+        }
         # Does anything ALREADY unread tag this worker? moe.wait_for_task only
         # wakes on NEW messages, so entering the wait with an unanswered
         # mention in hand would sit on it for the whole timeout.
-        if ($preflightGeneralUnread -and $preflightGeneralUnread.messages) {
-            foreach ($msg in $preflightGeneralUnread.messages) {
+        foreach ($unread in @($preflightGeneralUnread, $preflightRoutedUnread)) {
+            foreach ($msg in @($unread.messages)) {
                 if (-not $msg -or -not $msg.mentions) { continue }
                 foreach ($m in $msg.mentions) {
                     if ($m -eq $WorkerId -or $m -eq "all" -or ($roleGroupTag -and $m -eq $roleGroupTag)) { $preflightHasUnreadMention = $true; break }
@@ -5576,6 +5584,7 @@ do {
         # worker belongs to (architects/workers/qa).
         $buckets = @()
         if ($preflightGeneralUnread -and $preflightGeneralUnread.messages) { $buckets += ,$preflightGeneralUnread.messages }
+        if ($preflightRoutedUnread  -and $preflightRoutedUnread.messages)  { $buckets += ,$preflightRoutedUnread.messages }
         if ($preflightTaskUnread    -and $preflightTaskUnread.messages)    { $buckets += ,$preflightTaskUnread.messages }
         # Whole extraction is guarded: a throw here used to leave the block
         # simply absent, which reads to the recipient as "nobody tagged you".

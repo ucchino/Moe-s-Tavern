@@ -5764,6 +5764,7 @@ while [ "$LOOP_RUNNING" = true ]; do
     PREFLIGHT_TASK_CHANNEL=""
     PREFLIGHT_CONTEXT=""
     PREFLIGHT_GENERAL_UNREAD=""
+    PREFLIGHT_ROUTED_UNREAD=""
     PREFLIGHT_TASK_UNREAD=""
     PREFLIGHT_PENDING=""
     PREFLIGHT_SKILL_NAME=""
@@ -5882,19 +5883,31 @@ except Exception:
             qa)        ROLE_GROUP_TAG="qa" ;;
             governor)  ROLE_GROUP_TAG="governors" ;;
         esac
+        # #general/current-task reads miss routed mentions in role or peer
+        # channels. Ask the daemon for its routed backlog (loop guard intact).
+        # This SHORT poll fits the proxy's 2s stdin-EOF grace; never use the
+        # normal long-poll default here. Governors own their live chat waiter.
+        if [ "$ROLE" != "governor" ]; then
+            PREFLIGHT_ROUTED_UNREAD=$(moe_rpc chat_wait \
+                "$($PYTHON_CMD -c "import json,sys; print(json.dumps({'workerId':sys.argv[1],'channels':[],'timeoutMs':1000}))" "$WORKER_ID" 2>/dev/null)" \
+                2>/dev/null || echo "")
+        fi
         # Does anything ALREADY unread tag this worker? moe.wait_for_task only
         # wakes on NEW messages, so entering the wait with an unanswered
         # mention in hand would sit on it for the whole timeout.
-        if [ -n "$PYTHON_CMD" ] && [ -n "$PREFLIGHT_GENERAL_UNREAD" ]; then
+        if [ -n "$PYTHON_CMD" ]; then
             set +e
             PREFLIGHT_GENERAL_UNREAD="$PREFLIGHT_GENERAL_UNREAD" \
+                PREFLIGHT_ROUTED_UNREAD="$PREFLIGHT_ROUTED_UNREAD" \
                 $PYTHON_CMD - "$WORKER_ID" "$ROLE_GROUP_TAG" >/dev/null 2>&1 <<'PYEOF'
 import json, os, sys
 worker_id, role_group = sys.argv[1], sys.argv[2]
-try:
-    msgs = (json.loads(os.environ.get("PREFLIGHT_GENERAL_UNREAD") or "{}") or {}).get("messages") or []
-except Exception:
-    msgs = []
+msgs = []
+for name in ("PREFLIGHT_GENERAL_UNREAD", "PREFLIGHT_ROUTED_UNREAD"):
+    try:
+        msgs.extend((json.loads(os.environ.get(name) or "{}") or {}).get("messages") or [])
+    except Exception:
+        pass
 targets = {worker_id, "all"}
 if role_group:
     targets.add(role_group)
@@ -6337,6 +6350,7 @@ except Exception:
             # recipient as a marker, not as an empty block.
             set +e
             MENTIONS_RESULT=$(PREFLIGHT_GENERAL_UNREAD="$PREFLIGHT_GENERAL_UNREAD" \
+                              PREFLIGHT_ROUTED_UNREAD="$PREFLIGHT_ROUTED_UNREAD" \
                               PREFLIGHT_TASK_UNREAD="$PREFLIGHT_TASK_UNREAD" \
                               MOE_PROJECT_DIR="$PROJECT" \
                               $PYTHON_CMD - "$WORKER_ID" "$ROLE_GROUP_TAG" <<'PYEOF' 2>/dev/null
@@ -6441,7 +6455,7 @@ def extract_msgs(raw):
     return msgs if isinstance(msgs, list) else []
 hits = []
 seen = set()
-for env_name in ("PREFLIGHT_GENERAL_UNREAD", "PREFLIGHT_TASK_UNREAD"):
+for env_name in ("PREFLIGHT_GENERAL_UNREAD", "PREFLIGHT_ROUTED_UNREAD", "PREFLIGHT_TASK_UNREAD"):
     for msg in extract_msgs(os.environ.get(env_name, "")):
         if not isinstance(msg, dict): continue
         mid = msg.get("id")

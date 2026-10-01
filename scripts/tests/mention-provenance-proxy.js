@@ -116,13 +116,24 @@ switch (tool) {
     ok({ success: true });
     break;
   case 'chat_channels':
-    ok({ channels: [{ id: CHANNEL, name: 'general', type: 'general' }] });
+    ok({ channels: mode === 'cross-channel'
+      ? [{ id: 'chan-general', name: 'general', type: 'general' }, { id: CHANNEL, name: 'qa', type: 'custom' }]
+      : [{ id: CHANNEL, name: 'general', type: 'general' }] });
     break;
   case 'chat_join':
     ok({ success: true });
     break;
   case 'chat_read':
-    ok(chatRead());
+    // A routed #qa mention must wake a taskless seat even though neither
+    // #general nor its current task channel carries the message.
+    ok(mode === 'cross-channel' ? { messages: [], cursor: null, truncated: 0 } : chatRead());
+    break;
+  case 'chat_wait':
+    if (args.workerId !== workerId || args.timeoutMs !== 1000 ||
+        !Array.isArray(args.channels) || args.channels.length !== 0) {
+      throw new Error('preflight must use a 1-second routed-only poll, never an ambient long-poll');
+    }
+    ok(mode === 'cross-channel' ? { hasMessage: true, ...chatRead() } : { hasMessage: false, timedOut: true });
     break;
   case 'get_pending_questions':
     ok({ count: 0, totalMatches: 0, tasks: [] });

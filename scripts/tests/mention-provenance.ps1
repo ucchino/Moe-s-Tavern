@@ -141,6 +141,7 @@ function Invoke-ProvenanceMode {
         proxy = $env:MOE_PROXY_PATH; profile = $env:USERPROFILE; temp = $env:TEMP
         mode = $env:MOE_PROVENANCE_MODE; worker = $env:MOE_PROVENANCE_WORKER
         chan = $env:MOE_PROVENANCE_CHANNEL; cap = $env:MOE_PROVENANCE_CAPTURE
+        waitSec = $env:MOE_TASKLESS_WAIT_SEC
     }
     try {
         $env:MOE_PROXY_PATH = $fakeProxy
@@ -150,6 +151,7 @@ function Invoke-ProvenanceMode {
         $env:MOE_PROVENANCE_WORKER = $workerId
         $env:MOE_PROVENANCE_CHANNEL = $channel
         $env:MOE_PROVENANCE_CAPTURE = $capture
+        $env:MOE_TASKLESS_WAIT_SEC = '5'
         $prevEap = $ErrorActionPreference
         $ErrorActionPreference = 'Continue'
         & $psExe -NoProfile -File $wrapper `
@@ -168,6 +170,7 @@ function Invoke-ProvenanceMode {
         $env:TEMP = $saved.temp; $env:MOE_PROVENANCE_MODE = $saved.mode
         $env:MOE_PROVENANCE_WORKER = $saved.worker; $env:MOE_PROVENANCE_CHANNEL = $saved.chan
         $env:MOE_PROVENANCE_CAPTURE = $saved.cap
+        $env:MOE_TASKLESS_WAIT_SEC = $saved.waitSec
     }
     if ($rc -ne 0) {
         Get-Content $wrapperOut -Tail 40 | ForEach-Object { Write-Host "  $_" }
@@ -193,7 +196,8 @@ try {
     # faithful: the RPC carries the true bodies, truncated at maxContentChars
     # like the real chat_read. substitute: the RPC carries the impersonation
     # payload, reproducing the reported defect while the store stays correct.
-    foreach ($mode in @('faithful', 'substitute')) {
+    # cross-channel: only the routed backlog carries the mentions.
+    foreach ($mode in @('faithful', 'substitute', 'cross-channel')) {
         Write-Host "== mode=$mode =="
         if ((Invoke-ProvenanceMode -Mode $mode) -ne 0) { $status = 1 }
     }
@@ -209,5 +213,5 @@ if ($status -ne 0) {
     Write-Host 'mention-provenance.ps1 FAILED' -ForegroundColor Red
     exit 1
 }
-Write-Host "mention-provenance.ps1 PASSED ($caseCount stored cases + 2 synthetic delivery-failure cases, 2 modes)" -ForegroundColor Green
+Write-Host "mention-provenance.ps1 PASSED ($caseCount stored cases + 2 synthetic delivery-failure cases, 3 modes)" -ForegroundColor Green
 exit 0

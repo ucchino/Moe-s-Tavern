@@ -1428,3 +1428,107 @@ describe('moe.claim_next_task — runner process identity', () => {
     expect(fs.readdirSync(path.join(h.moePath, 'attempts'))).toEqual([`${String(first.attemptId)}.json`]);
   });
 });
+
+describe('moe.claim_next_task — ranking: priority before epic adjacency', () => {
+  let testDir: string;
+  let moePath: string;
+  let state: StateManager;
+
+  function setupMoe() {
+    fs.mkdirSync(moePath, { recursive: true });
+    for (const sub of ['epics', 'tasks', 'workers', 'proposals', 'channels', 'messages', 'teams']) {
+      fs.mkdirSync(path.join(moePath, sub));
+    }
+    const project: Partial<Project> = {
+      id: 'proj-test', schemaVersion: 6, name: 'Test', rootPath: testDir,
+      globalRails: { techStack: [], forbiddenPatterns: [], requiredPatterns: [], formatting: '', testing: '', customRules: [] },
+      settings: {
+        approvalMode: 'TURBO', speedModeDelayMs: 2000, autoCreateBranch: false,
+        branchPattern: '', commitPattern: '', agentCommand: 'claude', enableAgentTeams: false,
+      },
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    };
+    fs.writeFileSync(path.join(moePath, 'project.json'), JSON.stringify(project, null, 2));
+    for (const [id, order] of [['epic-1', 1], ['epic-2', 2]] as const) {
+      const epic: Epic = {
+        id, projectId: 'proj-test', title: id, description: '', architectureNotes: '',
+        epicRails: [], status: 'ACTIVE', order,
+        createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      };
+      fs.writeFileSync(path.join(moePath, 'epics', `${id}.json`), JSON.stringify(epic, null, 2));
+    }
+  }
+
+  function writeWorker(id: string, overrides: Partial<Worker> = {}): Worker {
+    const now = new Date().toISOString();
+    const worker: Worker = {
+      id, type: 'CLAUDE', projectId: 'proj-test', epicId: 'epic-1',
+      currentTaskId: null, status: 'IDLE', branch: '', modifiedFiles: [],
+      startedAt: now, lastActivityAt: now, lastError: null, errorCount: 0, teamId: null,
+      ...overrides,
+    };
+    fs.writeFileSync(path.join(moePath, 'workers', id + '.json'), JSON.stringify(worker, null, 2));
+    return worker;
+  }
+
+  function writeTask(id: string, overrides: Partial<Task> = {}): Task {
+    const now = new Date().toISOString();
+    const task: Task = {
+      id, epicId: 'epic-1', title: `Task ${id}`, description: '',
+      definitionOfDone: ['Done'], taskRails: [], implementationPlan: [],
+      status: 'WORKING', assignedWorkerId: null, branch: null, prLink: null,
+      reopenCount: 0, reopenReason: null, createdBy: 'HUMAN', parentTaskId: null,
+      order: 1, createdAt: now, updatedAt: now,
+      ...overrides,
+    };
+    fs.writeFileSync(path.join(moePath, 'tasks', id + '.json'), JSON.stringify(task, null, 2));
+    return task;
+  }
+
+  async function claim(params: Record<string, unknown>): Promise<string | null> {
+    const tool = claimNextTaskTool(state);
+    const result = await tool.handler({ workerId: 'w-1', statuses: ['WORKING'], ...params }, state) as {
+      hasNext: boolean; task?: { id: string };
+    };
+    return result.hasNext ? result.task!.id : null;
+  }
+
+  beforeEach(() => {
+    testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'moe-claim-rank-'));
+    moePath = path.join(testDir, '.moe');
+    setupMoe();
+    state = new StateManager({ projectPath: testDir });
+  });
+
+  afterEach(() => {
+    fs.rmSync(testDir, { recursive: true, force: true });
+  });
+
+  it('claims a CRITICAL task in another epic over a LOW task in the worker\'s own epic', async () => {
+    writeWorker('w-1', { epicId: 'epic-1' });
+    writeTask('task-low-home', { epicId: 'epic-1', priority: 'LOW', order: 1 });
+    writeTask('task-critical-away', { epicId: 'epic-2', priority: 'CRITICAL', order: 9 });
+    await state.load();
+
+    expect(await claim({})).toBe('task-critical-away');
+    expect(state.getTask('task-low-home')!.assignedWorkerId).toBeNull();
+  });
+
+  it('still prefers the worker\'s own epic between tasks of EQUAL priority', async () => {
+    writeWorker('w-1', { epicId: 'epic-1' });
+    writeTask('task-away', { epicId: 'epic-2', priority: 'MEDIUM', order: 1 });
+    writeTask('task-home', { epicId: 'epic-1', priority: 'MEDIUM', order: 9 });
+    await state.load();
+
+    expect(await claim({})).toBe('task-home');
+  });
+
+  it('ranks by priority then order alone when preferAdjacentInEpic is false', async () => {
+    writeWorker('w-1', { epicId: 'epic-1' });
+    writeTask('task-away', { epicId: 'epic-2', priority: 'MEDIUM', order: 1 });
+    writeTask('task-home', { epicId: 'epic-1', priority: 'MEDIUM', order: 9 });
+    await state.load();
+
+    expect(await claim({ preferAdjacentInEpic: false })).toBe('task-away');
+  });
+});

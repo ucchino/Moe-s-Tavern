@@ -1135,7 +1135,7 @@ Claim a task: by id (`taskId`) or the next prioritized task matching `statuses`.
   workerId?: string,
   replaceExisting?: boolean,       // Take over from existing worker
   taskId?: string,                 // Claim this specific task (must be in one of `statuses`)
-  preferAdjacentInEpic?: boolean,  // default: true — rank candidates in the worker's last epic ahead of others
+  preferAdjacentInEpic?: boolean,  // default: true — among equal priorities, rank the worker's last epic first
   processStartedAt?: string,       // runner process start time, recorded verbatim on the attempt (send with `host`)
   host?: string                    // host the runner process runs on, recorded verbatim (send with `processStartedAt`)
 }
@@ -1157,7 +1157,7 @@ When `taskId` is provided the priority/order ranking is bypassed — you get the
 
 **BLOCKED hold:** when the held task is `BLOCKED`, `alreadyAssigned` additionally carries `blockedReason`, `blockedResourceId` and `blockedOnTaskIds` (each present only when set on the task), and `nextAction` points at `moe.release_task` instead of `get_context`, spelling out the two workable exits: end the session and let the wrapper idle (the resource grant / dependency auto-unblock / a human clears it), or `moe.release_task { taskId }` to hand the task back with its `blockedReason` intact and free the slot for other work — never re-enter `wait_for_task` hoping for different work (nothing else is claimable while the hold stands). Note that an assignee-reported **non-resource** `report_blocked` frees the seat at report time, so a BLOCKED hold is the resource-block (hold+idle) shape or a third-party (workerId-less) block on an assigned task — an assignee-reported non-resource BLOCKED task is unassigned and simply not offered. A BLOCKED hold is not resumable work — the wrapper reads this status and suppresses the CLI relaunch entirely; a live session should end rather than spin. A set `blockedResourceId` means the daemon auto-unblocks the task the moment its lease is granted (see `## Shared Resources`); a set `blockedOnTaskIds` means it auto-unblocks when every listed task is DONE/ARCHIVED; neither set means the block needs a human (`moe.unblock_worker { resolveBlocks: true }` / `set_task_status` — a bare `unblock_worker` only frees the seat). Before idling on a BLOCKED hold the wrapper lands any lingering baseline for the held task as a recovery checkpoint (`MOE_CHECKPOINT_RECOVERED`), so a blocked task's files reach the branch with no CLI launched.
 
-With `preferAdjacentInEpic` on (default), candidates in the caller's currently-recorded epic (or explicit `epicId`) are ranked ahead of other epics before priority/order — so a worker waking from `wait_for_task` picks up the next adjacent task instead of jumping to an unrelated epic.
+Candidates rank by priority first, the same order `wait_for_task` uses, so a higher-priority task in any epic wins. With `preferAdjacentInEpic` on (default), candidates in the caller's currently-recorded epic (or explicit `epicId`) then rank ahead of other epics within one priority, before `order`. A worker waking from `wait_for_task` thus picks up the next adjacent task instead of jumping to an unrelated epic of the same priority.
 
 **Returns:**
 ```typescript
